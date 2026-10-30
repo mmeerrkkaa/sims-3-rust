@@ -14,7 +14,7 @@ pub enum SimPhase { Advance, Restore, Prepare, Step, Gameplay, Save }
 pub struct SimTick;
 
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum TickPhase { Needs, Actions, Motion, Pets, Animation }
+pub enum TickPhase { Needs, Actions, Motion, Pets, Social, Animation }
 
 /// Fraction between the previous and current simulation states; never advances gameplay.
 #[derive(Resource)]
@@ -57,7 +57,7 @@ pub fn clock_time(h: u64, m: u64) -> String {
 impl Plugin for ClockPlugin {
     fn build(&self, app: &mut App) {
         app.init_schedule(SimTick)
-            .configure_sets(SimTick, (TickPhase::Needs, TickPhase::Actions, TickPhase::Motion, TickPhase::Pets, TickPhase::Animation).chain())
+            .configure_sets(SimTick, (TickPhase::Needs, TickPhase::Actions, TickPhase::Motion, TickPhase::Pets, TickPhase::Social, TickPhase::Animation).chain())
             .init_resource::<PresentationClock>()
             .init_resource::<TickWorkload>()
             .configure_sets(Update, (SimPhase::Advance, SimPhase::Restore, SimPhase::Prepare, SimPhase::Step, SimPhase::Gameplay, SimPhase::Save).chain())

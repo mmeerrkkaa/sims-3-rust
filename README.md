@@ -16,7 +16,8 @@ Current engine work includes multiple active lots, persistent resident identitie
 saved guest/resident roles and departure deadlines, fixed-step needs/actions/movement,
 bounded catch-up, saved simulation time debt, and human and pet animation clocks driven
 by simulation ticks with interpolated poses. Pet needs, roaming, greetings, training
-and horse riding also use ordered simulation phases.
+and horse riding also use ordered simulation phases. Conversation decisions, listening,
+seated chatter, facial expressions and idle animations run on simulation ticks.
 Remaining gameplay systems, navigation and background residents
 are still being migrated. Performance gains are measured as each subsystem changes.
 
@@ -79,7 +80,9 @@ requires reducing work or choosing a cheaper simulation level.
 6. **Optimize measured bottlenecks.** Add batching, spatial indexes, caching and parallel
    jobs. Consider GPU compute for suitable bulk work after measuring transfer and
    synchronization costs.
-7. **Add multiplayer.** Plan shared-world play with synchronized resident state and
+7. **Bring a Sims 4-style interface to The Sims 3.** Rework the UI and interaction
+   flows for this port. This is a future goal and is not implemented yet.
+8. **Add multiplayer.** Plan shared-world play with synchronized resident state and
    interactions. Multiplayer is a future goal and is not implemented yet.
 
 We preserve working mechanics during migration and validate each subsystem as it moves.

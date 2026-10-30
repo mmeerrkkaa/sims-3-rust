@@ -8,7 +8,6 @@ use bevy::prelude::*;
 use rand::Rng;
 use rand::seq::IndexedRandom;
 
-use crate::PlayMode;
 use crate::anim::{ClipLibrary, FaceOverlay};
 use crate::clock::GameClock;
 use crate::life::{Mood, MoodletKind as M, Moodlets, Trait};
@@ -18,7 +17,7 @@ pub struct FacesPlugin;
 
 impl Plugin for FacesPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, faces.run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay));
+        app.add_systems(crate::clock::SimTick, faces.in_set(crate::groups::SocialPhase::Expressions));
     }
 }
 

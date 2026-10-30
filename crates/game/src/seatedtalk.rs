@@ -16,7 +16,7 @@ pub struct SeatedTalkPlugin;
 
 impl Plugin for SeatedTalkPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (seated_chatter.run_if(in_state(crate::PlayMode::Live)), talk_over));
+        app.add_systems(crate::clock::SimTick, (seated_chatter, talk_over).chain().in_set(crate::groups::SocialPhase::Seated));
         app.add_systems(crate::clock::SimTick, lie_back.after(crate::anim::advance_players::<false>).in_set(crate::clock::TickPhase::Animation));
     }
 }

@@ -11,7 +11,6 @@ use rand::Rng;
 use rand::seq::IndexedRandom;
 use s3bake::gamedata::IdleAnim;
 
-use crate::PlayMode;
 use crate::anim::{ActionClip, ClipLibrary};
 use crate::clock::GameClock;
 use crate::sim::{Age, Pose, Sim, SimAnim};
@@ -20,7 +19,7 @@ pub struct IdlesPlugin;
 
 impl Plugin for IdlesPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, idle.run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay));
+        app.add_systems(crate::clock::SimTick, idle.in_set(crate::groups::SocialPhase::Expressions));
     }
 }
 

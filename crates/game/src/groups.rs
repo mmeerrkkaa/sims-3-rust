@@ -14,7 +14,6 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 use rand::Rng;
 
-use crate::PlayMode;
 use crate::interact::{Action, ActionKind, ActionQueue, Phase, SocialPartner};
 use crate::sim::{Sim, SimAnim};
 
@@ -22,9 +21,21 @@ pub struct GroupsPlugin;
 
 impl Plugin for GroupsPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Conversations>().add_systems(Update, (join_talks, leave_talks, listen_along, call_over).chain().run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay));
+        app.init_resource::<Conversations>()
+            .configure_sets(crate::clock::SimTick, (SocialPhase::Groups, SocialPhase::Topics, SocialPhase::Seated, SocialPhase::Expressions).chain().in_set(crate::clock::TickPhase::Social))
+            .add_systems(crate::clock::SimTick, (join_talks, leave_talks, listen_along, call_over).chain().in_set(SocialPhase::Groups));
+        #[cfg(local_validation)]
+        app.init_resource::<crate::npc_ownership_test::SocialTickProbe>()
+            .add_systems(Update, crate::npc_ownership_test::social_setup.in_set(crate::clock::SimPhase::Prepare).run_if(in_state(crate::PlayMode::Live).and_then(|| std::env::var_os("SOCIAL_TICK_TEST").is_some())))
+            .add_systems(crate::clock::SimTick, crate::npc_ownership_test::social_before.before(join_talks).in_set(SocialPhase::Groups).run_if(|| std::env::var_os("SOCIAL_TICK_TEST").is_some()))
+            .add_systems(crate::clock::SimTick, crate::npc_ownership_test::social_after.after(call_over).in_set(SocialPhase::Groups).run_if(|| std::env::var_os("SOCIAL_TICK_TEST").is_some()))
+            .add_systems(Update, crate::npc_ownership_test::social_frame.in_set(crate::clock::SimPhase::Gameplay).run_if(in_state(crate::PlayMode::Live).and_then(|| std::env::var_os("SOCIAL_TICK_TEST").is_some())));
     }
 }
+
+/// Social decisions finish before the fixed animation playheads are advanced.
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum SocialPhase { Groups, Topics, Seated, Expressions }
 
 /// The game's `kConversationExitRadius`: further than this from the rest, and they've left it.
 pub const EXIT_RADIUS: f32 = 3.0;
@@ -174,6 +185,8 @@ fn join_talks(
     let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra21);
     let mut rng = rand::rng();
     let now = clock.minutes;
+    // Only a social observed this tick can keep a conversation actively talking.
+    for group in convs.groups.values_mut() { group.talk = None; }
     for (me, queue) in &sims {
         let talking = match queue.0.front() {
             Some(Action { kind: ActionKind::Social { target, social }, phase: Phase::Running(_), seated: false, autonomous, .. }) if *social < crate::social::all_socials().count() => {
@@ -297,7 +310,6 @@ fn listen_along(
     delta: Res<crate::clock::SimDelta>,
     mut commands: Commands,
     convs: Res<Conversations>,
-    time: Res<Time>,
     mut sims: Query<
         (Entity, &Sim, &ActionQueue, &mut Transform, &mut crate::sim::Motives, Has<SocialPartner>, Has<Listening>, Option<&crate::nav::PathFollow>, Option<&crate::anim::ActionClip>, Has<crate::carry::Holding>),
         With<SimAnim>,
@@ -335,7 +347,7 @@ fn listen_along(
             let to = at - tf.translation;
             if to.xz().length() > 0.1 {
                 let want = Quat::from_rotation_y(to.x.atan2(to.z));
-                tf.rotation = tf.rotation.slerp(want, (time.delta_secs() * 4.0).min(1.0));
+                tf.rotation = tf.rotation.slerp(want, (s3sim::time::STEP_NS as f32 / 1e9 * 4.0).min(1.0));
             }
         }
         if g.talk.is_some() {
@@ -351,19 +363,22 @@ pub struct CallingOver(pub Entity);
 
 fn call_over(
     mut commands: Commands,
-    time: Res<Time>,
-    mut callers: Query<(Entity, &CallingOver, &mut Transform, &ActionQueue)>,
-    spots: Query<&GlobalTransform, With<Sim>>,
+    mut views: ParamSet<(
+        Query<(Entity, &CallingOver, &mut Transform, &ActionQueue)>,
+        Query<&Transform, With<Sim>>,
+    )>,
     mut queues: Query<&mut ActionQueue, Without<CallingOver>>,
 ) {
     let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra25);
-    for (me, call, mut tf, queue) in &mut callers {
+    let targets: Vec<_> = views.p0().iter().map(|(_, call, ..)| call.0).collect();
+    let spots: HashMap<_, _> = targets.into_iter().filter_map(|e| views.p1().get(e).map(|t| (e, t.translation)).ok()).collect();
+    for (me, call, mut tf, queue) in &mut views.p0() {
         let calling = queue.0.front().is_some_and(|a| a.label == INVITE_LABEL);
-        if let Ok(t) = spots.get(call.0) {
-            let to = t.translation() - tf.translation;
+        if let Some(at) = spots.get(&call.0) {
+            let to = *at - tf.translation;
             if calling && to.xz().length() > 0.1 {
                 let want = Quat::from_rotation_y(to.x.atan2(to.z));
-                tf.rotation = tf.rotation.slerp(want, (time.delta_secs() * 6.0).min(1.0));
+                tf.rotation = tf.rotation.slerp(want, (s3sim::time::STEP_NS as f32 / 1e9 * 6.0).min(1.0));
             }
         }
         if calling {

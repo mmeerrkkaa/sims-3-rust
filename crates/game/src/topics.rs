@@ -19,16 +19,23 @@ pub struct TopicsPlugin;
 
 impl Plugin for TopicsPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<TopicWorkload>().add_message::<AddTopic>().add_systems(Update, (give, (mess, expecting), events, doing, chatter.after(crate::clock::advance_clock).after(crate::save::apply_loaded_game)).chain().run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay));
+        app.init_resource::<TopicWorkload>().add_message::<AddTopic>()
+            // Capture transient messages/Added/Removed markers even on frames with no ticks.
+            .add_systems(Update, (reset_workload, give, (mess, expecting), events).chain().run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Prepare))
+            .add_systems(crate::clock::SimTick, (doing, chatter).chain().in_set(crate::groups::SocialPhase::Topics));
     }
 }
 
-/// Latest tick dispatch, for observing overload without dropping pending decisions.
+/// Decisions dispatched in this render frame, plus the latest tick backlog.
 #[derive(Resource, Default)]
 pub struct TopicWorkload {
     pub batch: usize,
     pub pending: usize,
     pub oldest_delay: s3sim::Tick,
+}
+
+fn reset_workload(mut workload: ResMut<TopicWorkload>) {
+    workload.batch = 0;
 }
 
 /// A topic given a Sim (`about`: the Sim it concerns, when it does: the cook to thank).
@@ -363,14 +370,13 @@ fn chatter(
     mut sims: Query<(Entity, &Sim, &Transform, &InheritedVisibility, &mut ActionQueue, &crate::sim::SimAnim), (Without<crate::interact::AtWork>, Without<crate::rabbitholes::AtRabbitHole>)>,
 ) {
     let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra104);
-    workload.batch = 0;
     if delta.0 <= 0.0 { return; }
     let now = s3sim::tick_at(clock.minutes);
     let plans = &mut story.conversations;
     plans.expire(now);
     plans.agenda.reconcile(sims.iter().map(|(_, sim, ..)| sim.id), now, 50);
     let batch = plans.agenda.dispatch(now, 50, 16);
-    workload.batch = batch.residents.len();
+    workload.batch += batch.residents.len();
     workload.pending = batch.overdue;
     workload.oldest_delay = batch.oldest_delay;
     if batch.residents.is_empty() { return; }
