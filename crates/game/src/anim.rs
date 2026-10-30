@@ -16,7 +16,15 @@ pub struct AnimPlugin;
 impl Plugin for AnimPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ClipLibrary>()
-            .add_systems(Update, (commit_root_motion, drive_skeletons).chain().run_if(in_state(PlayMode::Live).or_else(in_state(crate::AppState::CreateHousehold))).in_set(crate::clock::SimPhase::Gameplay));
+            .add_systems(Update, advance_players::<true>.in_set(crate::clock::SimPhase::Prepare).run_if(in_state(PlayMode::Live).or_else(in_state(crate::AppState::CreateHousehold))))
+            .add_systems(crate::clock::SimTick, commit_root_motion.after(crate::interact::run_actions).in_set(crate::clock::TickPhase::Actions))
+            .add_systems(crate::clock::SimTick, advance_players::<false>.in_set(crate::clock::TickPhase::Animation))
+            .add_systems(Update, (commit_root_motion, advance_players::<false>).chain().run_if(in_state(crate::AppState::CreateHousehold)).in_set(crate::clock::SimPhase::Gameplay))
+            .add_systems(Update, drive_skeletons.after(advance_players::<false>).run_if(in_state(PlayMode::Live).or_else(in_state(crate::AppState::CreateHousehold))).in_set(crate::clock::SimPhase::Gameplay));
+        #[cfg(local_validation)]
+        app.init_resource::<crate::npc_ownership_test::AnimationProbe>()
+            .add_systems(Update, crate::npc_ownership_test::animation_before.before(drive_skeletons).in_set(crate::clock::SimPhase::Gameplay).run_if(in_state(crate::AppState::InGame).and_then(|| std::env::var_os("ANIMATION_CLOCK_TEST").is_some())))
+            .add_systems(Update, crate::npc_ownership_test::animation_after.after(drive_skeletons).in_set(crate::clock::SimPhase::Gameplay).run_if(in_state(crate::AppState::InGame).and_then(|| std::env::var_os("ANIMATION_CLOCK_TEST").is_some())));
     }
 }
 
@@ -193,6 +201,21 @@ pub struct ClipPlayer {
     /// How far a clip that carries the Sim along (down a slide) has taken them from where it
     /// began, in their own frame: where they're left when it's done.
     pub root_offset: Vec3,
+    previous_time: f32,
+    previous_carry_time: f32,
+    previous_blend: f32,
+    capture_from: bool,
+    pending_start: bool,
+    previous_world: Transform,
+    current_world: Transform,
+    world_initialized: bool,
+    world_lot: Option<usize>,
+    visual_offset: Vec3,
+    visual_rotation: Quat,
+    /// Riding can synchronize a visual pose without rewriting the gameplay playhead.
+    pub(crate) presentation_time: Option<f32>,
+    #[cfg(local_validation)]
+    pub(crate) clock_advances: u64,
 }
 
 /// fnv32("world_offset"): the rig's helper whose track is how far a clip takes the Sim (the
@@ -238,6 +261,9 @@ impl ClipPlayer {
     pub fn rebuilt(&mut self) {
         self.from.clear();
         self.blend = 0.0;
+        self.capture_from = false;
+        self.visual_offset = Vec3::ZERO;
+        self.visual_rotation = Quat::IDENTITY;
     }
 }
 
@@ -390,36 +416,34 @@ pub fn clip_anchor(name: &str) -> Option<(Vec3, f32)> {
     }
 }
 
-pub fn drive_skeletons(
+/// Playback decisions, playheads and sound events advance only on simulation ticks.
+/// The zero-delta specialization initializes paused/new actors without stepping a clip.
+pub(crate) fn advance_players<const INITIALIZE: bool>(
     time: Res<Time>,
     delta: Res<crate::clock::SimDelta>,
     state: Res<State<crate::AppState>>,
     data: Res<Baked>,
     mut lib: ResMut<ClipLibrary>,
-    mut sims: Query<(
-        Entity,
-        &Sim,
-        &SimAnim,
-        &Skeleton,
-        Option<&ActionClip>,
-        &mut ClipPlayer,
-        Has<crate::little::OnFloor>,
-        Option<&crate::little::ToddlerSkills>,
-        Option<&Carrying>,
-        Has<crate::jog::Jogging>,
-        Option<&crate::nav::PathFollow>,
-        Option<&crate::little::Pregnancy>,
-        Has<crate::supernatural::WolfForm>,
-        (Option<&FaceOverlay>, Option<&mut crate::seatedtalk::TalkOverlay>),
-    )>,
-    mut joints: Query<&mut Transform, Without<Sim>>,
+    mut sims: Query<(Entity, &Sim, &SimAnim, Option<&ActionClip>, &mut ClipPlayer,
+        Has<crate::little::OnFloor>, Option<&crate::little::ToddlerSkills>, Option<&Carrying>,
+        Has<crate::jog::Jogging>, Option<&crate::nav::PathFollow>, Option<&crate::little::Pregnancy>,
+        Has<crate::supernatural::WolfForm>, Option<&mut crate::seatedtalk::TalkOverlay>, &Transform, Option<&crate::visit::OnLot>)>,
     mut cues: MessageWriter<crate::sound::ClipCue>,
-    mut arms: Local<HashMap<String, Arc<Vec<bool>>>>,
-    mut partners: Local<HashMap<String, Arc<Vec<u32>>>>,
 ) {
-    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Skeletons);
-    let dt = if *state.get() == crate::AppState::CreateHousehold { time.delta_secs().min(0.1) } else { delta.0 };
-    for (entity, sim, anim, skel, action, mut player, on_floor, toddler, carrying, jogging, path, pregnancy, wolf, (face_overlay, mut talk_overlay)) in &mut sims {
+    let dt = if INITIALIZE { 0.0 } else if *state.get() == crate::AppState::CreateHousehold { time.delta_secs().min(0.1) } else { delta.0 };
+    for (entity, sim, anim, action, mut player, on_floor, toddler, carrying, jogging, path, pregnancy, wolf, mut talk_overlay, transform, lot) in &mut sims {
+        if INITIALIZE && player.clip.is_some() { continue; }
+        player.previous_time = player.time;
+        player.previous_carry_time = player.carry_time;
+        player.previous_blend = player.blend;
+        let lot = lot.map(|l| l.0);
+        let snap = !player.world_initialized || player.world_lot != lot || player.current_world.translation.distance(transform.translation) > 3.0;
+        player.previous_world = if snap { *transform } else { player.current_world };
+        player.current_world = *transform;
+        player.world_initialized = true;
+        player.world_lot = lot;
+        #[cfg(local_validation)]
+        if !INITIALIZE && *state.get() == crate::AppState::InGame { player.clock_advances += 1; }
         use crate::sim::Occult;
         let fast = matches!(path.filter(|p| !p.done).map(|p| p.now), Some(crate::nav::WalkStyle::Run | crate::nav::WalkStyle::FastRun | crate::nav::WalkStyle::FastJog));
         let child = sim.age == crate::sim::Age::Child;
@@ -445,7 +469,7 @@ pub fn drive_skeletons(
         let changed = player.script.as_ref() != Some(&script);
         // Walks keep looping one clip; everything else moves on to a new variant when a clip ends.
         let cycles = !matches!(anim.pose, Pose::Walk);
-        let mut from_time = player.time;
+        let mut from_time = if player.pending_start { -1e-3 } else { player.time };
         if changed || (ended && cycles) {
             if changed {
                 player.step = 0;
@@ -461,7 +485,7 @@ pub fn drive_skeletons(
                     // first clip; a cross-fade from the bind pose would freeze a paused
                     // game's newly loaded Sims in a T-pose until time was resumed.
                     if player.clip.is_some() {
-                        player.from = skel.joints.iter().map(|j| joints.get(*j).copied().unwrap_or_default()).collect();
+                        player.capture_from = true;
                         player.blend = 1.0;
                     } else {
                         player.from.clear();
@@ -472,6 +496,9 @@ pub fn drive_skeletons(
                 debug!("{} plays {name}", sim.first);
                 player.name = name;
                 player.time = 0.0;
+                player.pending_start = true;
+                player.previous_time = 0.0;
+                player.previous_blend = player.blend;
                 from_time = -1e-3;
             }
             player.script = Some(script);
@@ -483,33 +510,15 @@ pub fn drive_skeletons(
         };
         player.time += dt * step;
         player.blend = (player.blend - dt / 0.25).max(0.0);
+
+
         let Some(clip) = player.clip.clone() else { continue };
-        // A carry: its clip over the arms (looping on its own time).
         let carry = carrying.filter(|_| Carrying::shows(anim.pose, action.is_some())).and_then(|c| lib.get(&data, c.0));
-        let carry_t = match &carry {
-            Some(c) => {
-                player.carry_time += dt;
-                if c.duration > 0.0 { player.carry_time % c.duration } else { 0.0 }
-            }
-            None => {
-                player.carry_time = 0.0;
-                0.0
-            }
-        };
-        let arm = carry.as_ref().map(|_| arms.entry(skel.rig.name.clone()).or_insert_with(|| Arc::new(skel.rig.bones.iter().map(|b| arm_bone(&b.name)).collect())).clone());
-        // (A seated talk over the upper body, looping on its own time.)
-        let talk = talk_overlay.as_mut().and_then(|t| {
-            let c = lib.get(&data, &t.clip)?.clone();
-            t.time += dt;
-            if c.duration > 0.0 {
-                t.time %= c.duration;
-            }
-            Some((c, t.time))
-        });
-        let upper = talk.as_ref().map(|_| arms.entry(format!("{}#upper", skel.rig.name)).or_insert_with(|| Arc::new(skel.rig.bones.iter().map(|b| upper_bone(&b.name)).collect())).clone());
-        // (An expression on the face, over it all.)
-        let face = face_overlay.and_then(|f| lib.get(&data, &f.clip).map(|c| (c.clone(), f.time.clamp(0.0, c.duration))));
-        let face_mask = face.as_ref().map(|_| arms.entry(format!("{}#face", skel.rig.name)).or_insert_with(|| Arc::new(skel.rig.bones.iter().map(|b| face_bone(&b.name)).collect())).clone());
+        player.carry_time = if carry.is_some() { player.carry_time + dt } else { 0.0 };
+        if let Some(talk) = talk_overlay.as_mut() && let Some(clip) = lib.get(&data, &talk.clip) {
+            talk.time += dt;
+            if clip.duration > 0.0 { talk.time %= clip.duration; }
+        }
         // Sound cues passed this frame (walk clips loop, so count whole cycles).
         if dt > 0.0 && clip.duration > 0.0 && !clip.sounds.is_empty() {
             let d = clip.duration;
@@ -523,12 +532,78 @@ pub fn drive_skeletons(
                 }
             }
         }
+        if dt > 0.0 { player.pending_start = false; }
+
+        if action.is_some() && travels(&player.name) {
+            let t = player.time.min(clip.duration.max(0.0));
+            if let Some(offset) = clip.tracks.get(&WORLD_OFFSET).and_then(|w| sample_track_vec(&w.translation, t)) {
+                player.root_offset = Vec3::new(if action.is_some_and(|a| a.mirror) { -offset.x } else { offset.x }, 0.0, -offset.z);
+            }
+        }
+    }
+}
+
+pub fn drive_skeletons(
+    presentation: Res<crate::clock::PresentationClock>,
+    state: Res<State<crate::AppState>>,
+    data: Res<Baked>,
+    mut lib: ResMut<ClipLibrary>,
+    mut sims: Query<(
+        &SimAnim,
+        &Skeleton,
+        Option<&ActionClip>,
+        &mut ClipPlayer,
+        Option<&Carrying>,
+        (Option<&FaceOverlay>, Option<&crate::seatedtalk::TalkOverlay>, &Transform, Option<&crate::visit::OnLot>, Has<crate::riding::Mounted>),
+    ), With<Sim>>,
+    mut joints: Query<&mut Transform, Without<Sim>>,
+    mut arms: Local<HashMap<String, Arc<Vec<bool>>>>,
+    mut partners: Local<HashMap<String, Arc<Vec<u32>>>>,
+) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Skeletons);
+    let alpha = if *state.get() == crate::AppState::InGame { presentation.alpha } else { 1.0 };
+    for (anim, skel, action, mut player, carrying, (face_overlay, talk_overlay, transform, lot, mounted)) in &mut sims {
+        let Some(clip) = player.clip.clone() else { continue };
+        if player.capture_from {
+            let rotation = player.visual_rotation.inverse();
+            let offset = player.visual_offset;
+            player.from = skel.joints.iter().enumerate().map(|(i,j)| {
+                let mut pose = joints.get(*j).copied().unwrap_or_default();
+                if i == 0 { pose.translation = rotation * (pose.translation - offset); pose.rotation = rotation * pose.rotation; }
+                pose
+            }).collect();
+            player.capture_from = false;
+        }
+        let render_time = if mounted { player.presentation_time.unwrap_or(player.time) }
+            else { player.previous_time + (player.time - player.previous_time) * alpha };
+        let blend = player.previous_blend + (player.blend - player.previous_blend) * alpha;
+        let motion_current = player.world_initialized && player.current_world == *transform && player.world_lot == lot.map(|l| l.0) && !mounted;
+        let (visual_offset, visual_rotation) = if motion_current {
+            let at = player.previous_world.translation.lerp(player.current_world.translation, alpha);
+            let turn = player.previous_world.rotation.slerp(player.current_world.rotation, alpha);
+            (transform.rotation.inverse() * (at - transform.translation) / transform.scale.max(Vec3::splat(1e-6)), transform.rotation.inverse() * turn)
+        } else { (Vec3::ZERO, Quat::IDENTITY) };
+        player.visual_offset = visual_offset;
+        player.visual_rotation = visual_rotation;
+        // A carry: its clip over the arms (looping on its own time).
+        let carry = carrying.filter(|_| Carrying::shows(anim.pose, action.is_some())).and_then(|c| lib.get(&data, c.0));
+        let carry_t = carry.as_ref().map_or(0.0, |c| {
+            let time = player.previous_carry_time + (player.carry_time - player.previous_carry_time) * alpha;
+            if c.duration > 0.0 { time % c.duration } else { 0.0 }
+        });
+        let arm = carry.as_ref().map(|_| arms.entry(skel.rig.name.clone()).or_insert_with(|| Arc::new(skel.rig.bones.iter().map(|b| arm_bone(&b.name)).collect())).clone());
+        // (A seated talk over the upper body, looping on its own time.)
+        let talk = talk_overlay.and_then(|t| lib.get(&data, &t.clip).map(|clip| (clip, t.time)));
+        let upper = talk.as_ref().map(|_| arms.entry(format!("{}#upper", skel.rig.name)).or_insert_with(|| Arc::new(skel.rig.bones.iter().map(|b| upper_bone(&b.name)).collect())).clone());
+        // (An expression on the face, over it all.)
+        let face = face_overlay.and_then(|f| lib.get(&data, &f.clip).map(|c| (c.clone(), f.time.clamp(0.0, c.duration))));
+        let face_mask = face.as_ref().map(|_| arms.entry(format!("{}#face", skel.rig.name)).or_insert_with(|| Arc::new(skel.rig.bones.iter().map(|b| face_bone(&b.name)).collect())).clone());
         // (Walks cycle; any other clip holds its last pose until the next one takes over,
         // rather than flicking back to its first for a frame.)
-        let t = match (clip.duration > 0.0, cycles) {
+        let t = match (clip.duration > 0.0, !matches!(anim.pose, Pose::Walk)) {
             (false, _) => 0.0,
-            (true, true) => player.time.min(clip.duration),
-            (true, false) => player.time % clip.duration,
+            (true, true) => render_time.min(clip.duration),
+            (true, false) => render_time % clip.duration,
         };
         // (Mirrored: each bone plays its partner's track on the body's other side, reflected
         // across the middle: the rig's sides are each other's mirror images.)
@@ -555,9 +630,6 @@ pub fn drive_skeletons(
             .then(|| clip.tracks.get(&WORLD_OFFSET).and_then(|w| sample_track_vec(&w.translation, t)))
             .flatten()
             .map(|w| Vec3::new(if mirror { -w.x } else { w.x }, 0.0, -w.z));
-        if let Some(o) = travel {
-            player.root_offset = o;
-        }
         for (i, bone) in skel.rig.bones.iter().enumerate() {
             let Ok(mut tf) = joints.get_mut(skel.joints[i]) else { continue };
             let bind = skel.bind[i];
@@ -633,11 +705,15 @@ pub fn drive_skeletons(
                 target.translation = q * (target.translation - at);
                 target.rotation = q * target.rotation;
             }
-            if player.blend > 0.0
+            if blend > 0.0
                 && let Some(from) = player.from.get(i)
             {
-                target.translation = target.translation.lerp(from.translation, player.blend);
-                target.rotation = target.rotation.slerp(from.rotation, player.blend);
+                target.translation = target.translation.lerp(from.translation, blend);
+                target.rotation = target.rotation.slerp(from.rotation, blend);
+            }
+            if i == 0 {
+                target.translation = visual_rotation * target.translation + visual_offset;
+                target.rotation = visual_rotation * target.rotation;
             }
             *tf = target;
         }

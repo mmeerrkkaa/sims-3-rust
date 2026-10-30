@@ -5,7 +5,6 @@
 
 use bevy::prelude::*;
 
-use crate::PlayMode;
 use crate::anim::{ActionClip, ClipPlayer};
 use crate::sim::{Age, Pose, Sim, SimAnim};
 use crate::simbody::{ChangedInto, OutfitKind, Wearing};
@@ -14,7 +13,7 @@ pub struct DressingPlugin;
 
 impl Plugin for DressingPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, spin.run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay));
+        app.add_systems(crate::clock::SimTick, spin.before(crate::interact::run_actions).in_set(crate::clock::TickPhase::Actions));
     }
 }
 

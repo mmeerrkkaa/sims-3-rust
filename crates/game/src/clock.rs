@@ -14,7 +14,15 @@ pub enum SimPhase { Advance, Restore, Prepare, Step, Gameplay, Save }
 pub struct SimTick;
 
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum TickPhase { Needs, Actions, Motion }
+pub enum TickPhase { Needs, Actions, Motion, Animation }
+
+/// Fraction between the previous and current simulation states; never advances gameplay.
+#[derive(Resource)]
+pub struct PresentationClock { pub alpha: f32 }
+
+impl Default for PresentationClock {
+    fn default() -> Self { Self { alpha: 1.0 } }
+}
 
 #[derive(Resource, Default)]
 pub struct TickWorkload {
@@ -49,7 +57,8 @@ pub fn clock_time(h: u64, m: u64) -> String {
 impl Plugin for ClockPlugin {
     fn build(&self, app: &mut App) {
         app.init_schedule(SimTick)
-            .configure_sets(SimTick, (TickPhase::Needs, TickPhase::Actions, TickPhase::Motion).chain())
+            .configure_sets(SimTick, (TickPhase::Needs, TickPhase::Actions, TickPhase::Motion, TickPhase::Animation).chain())
+            .init_resource::<PresentationClock>()
             .init_resource::<TickWorkload>()
             .configure_sets(Update, (SimPhase::Advance, SimPhase::Restore, SimPhase::Prepare, SimPhase::Step, SimPhase::Gameplay, SimPhase::Save).chain())
             .add_systems(Update, run_ticks.in_set(SimPhase::Step));
@@ -223,6 +232,9 @@ fn run_ticks(world: &mut World) {
         let clock = world.resource::<GameClock>();
         (clock.timeline.pending_seconds(), clock.timeline.pending_minutes())
     };
+    let alpha = if restored { 1.0 } else if paused { world.resource::<PresentationClock>().alpha }
+        else { (seconds / (s3sim::time::STEP_NS as f64 / 1e9)).clamp(0.0, 1.0) as f32 };
+    world.resource_mut::<PresentationClock>().alpha = alpha;
     let mut workload = world.resource_mut::<TickWorkload>();
     workload.pending_seconds = seconds;
     workload.pending_minutes = minutes;

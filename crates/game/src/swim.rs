@@ -15,13 +15,12 @@ use crate::anim::ActionClip;
 use crate::interact::{ActionKind, ActionQueue, GameObject, Phase, Special, interactions_for};
 use crate::loading::CurrentWorld;
 use crate::sim::Sim;
-use crate::PlayMode;
 
 pub struct SwimPlugin;
 
 impl Plugin for SwimPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (swim, pool_socials, pyjamas).chain().after(crate::save::apply_loaded_game).run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay));
+        app.add_systems(crate::clock::SimTick, (swim, pool_socials, pyjamas).chain().after(crate::interact::run_actions).in_set(crate::clock::TickPhase::Actions));
     }
 }
 

@@ -489,7 +489,7 @@ fn in_step(mut commands: Commands, mut sims: Query<(Entity, &Mounted, Option<&Ac
         let Some(h) = horses.get(m.horse).ok().filter(|_| m.in_step()) else { continue };
         let Some(dur) = player.clip.as_ref().map(|c| c.duration).filter(|d| *d > 0.0) else { continue };
         // (Getting on and off play once, held at their end; the rest go round.)
-        player.time = if m.up() { h.time() % dur } else { h.time().min(dur - 1e-3) };
+        player.presentation_time = Some(if m.up() { h.time() % dur } else { h.time().min(dur - 1e-3) });
     }
 }
 

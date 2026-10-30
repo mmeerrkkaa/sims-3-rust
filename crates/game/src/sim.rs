@@ -13,6 +13,7 @@ impl Plugin for SimPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SimAssets>()
             .add_systems(Startup, init_sim_assets)
+            .add_systems(crate::clock::SimTick, advance_body_phase.in_set(crate::clock::TickPhase::Animation))
             .add_systems(crate::clock::SimTick, decay_motives.in_set(crate::clock::TickPhase::Needs))
             .add_systems(
                 Update,
@@ -432,6 +433,7 @@ pub enum Pose {
 pub struct SimAnim {
     pub pose: Pose,
     pub phase: f32,
+    pub(crate) previous_phase: f32,
     /// Height offset used for sitting / lying on furniture.
     pub seat_height: f32,
 }
@@ -856,26 +858,33 @@ mod reward_motive_tests {
     }
 }
 
-fn animate_bodies(
-    time: Res<Time>,
+fn advance_body_phase(
     delta: Res<SimDelta>,
-    mut sims: Query<(&mut SimAnim, &SimBody)>,
+    clock: Res<crate::clock::GameClock>,
+    mut sims: Query<&mut SimAnim, With<SimBody>>,
+) {
+    let dt = delta.capped(crate::clock::SPEED_RATES[clock.speed], 4.0);
+    for mut anim in &mut sims {
+        anim.previous_phase = anim.phase;
+        let rate = match anim.pose {
+            Pose::Walk => 9.0,
+            Pose::Dance => 6.0,
+            Pose::Exercise => 11.0,
+            Pose::Talk => 3.0,
+            _ => 1.5,
+        };
+        anim.phase += dt * rate;
+    }
+}
+
+fn animate_bodies(
+    presentation: Res<crate::clock::PresentationClock>,
+    sims: Query<(&SimAnim, &SimBody)>,
     mut tfs: Query<&mut Transform, Without<SimAnim>>,
 ) {
     let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Bodies);
-    let paused = delta.0 <= 0.0;
-    for (mut anim, body) in &mut sims {
-        if !paused {
-            let rate = match anim.pose {
-                Pose::Walk => 9.0,
-                Pose::Dance => 6.0,
-                Pose::Exercise => 11.0,
-                Pose::Talk => 3.0,
-                _ => 1.5,
-            };
-            anim.phase += time.delta_secs() * rate * (delta.0 / time.delta_secs().max(1e-4)).min(4.0).max(0.5);
-        }
-        let p = anim.phase;
+    for (anim, body) in &sims {
+        let p = anim.previous_phase + (anim.phase - anim.previous_phase) * presentation.alpha;
         let (mut leg, mut arm, mut root_y, mut root_rot, mut arm_out) = (0.0f32, 0.0f32, 0.0f32, Quat::IDENTITY, 0.0f32);
         let mut legs_fwd = 0.0f32;
         match anim.pose {
