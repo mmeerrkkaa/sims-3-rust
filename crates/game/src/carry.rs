@@ -25,8 +25,8 @@ pub struct CarryPlugin;
 
 impl Plugin for CarryPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (care_in_arms, put_down_first, hold_still).chain().before(crate::interact::run_actions).run_if(in_state(PlayMode::Live)))
-            .add_systems(Update, (carry_moves, held_idle, tidy_babies, carry_test).chain().after(crate::interact::run_actions).run_if(in_state(PlayMode::Live)))
+        app.add_systems(crate::clock::SimTick, (care_in_arms, put_down_first, hold_still).chain().before(crate::interact::run_actions).run_if(in_state(PlayMode::Live)).in_set(crate::clock::TickPhase::Actions))
+            .add_systems(crate::clock::SimTick, (carry_moves, held_idle, tidy_babies, carry_test).chain().after(crate::interact::run_actions).run_if(in_state(PlayMode::Live)).in_set(crate::clock::TickPhase::Actions))
             .add_systems(PostUpdate, follow.after(bevy::transform::TransformSystems::Propagate));
     }
 }

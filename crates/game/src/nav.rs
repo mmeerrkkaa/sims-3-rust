@@ -6,7 +6,6 @@ use std::collections::{BinaryHeap, HashMap};
 use bevy::prelude::*;
 
 use crate::PlayMode;
-use crate::clock::{GameClock, SPEED_RATES};
 use crate::loading::CurrentWorld;
 use crate::sim::{Pose, SimAnim};
 
@@ -15,7 +14,9 @@ pub struct NavPlugin;
 impl Plugin for NavPlugin {
     fn build(&self, app: &mut App) {
         // (After doors and gates open their ways through, and with them in place.)
-        app.init_resource::<SpiralLinks>().add_systems(Update, (spiral_place_test, spiral_links, rebuild_upper_floors, rebuild_grid, settle_lot_exit, spiral_test, follow_paths, climb_spirals).chain().after(crate::building::cut_openings).run_if(in_state(PlayMode::Live)));
+        app.init_resource::<SpiralLinks>()
+            .add_systems(Update, (spiral_place_test, spiral_links, rebuild_upper_floors, rebuild_grid, settle_lot_exit, spiral_test).chain().after(crate::building::cut_openings).run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Prepare))
+            .add_systems(crate::clock::SimTick, (follow_paths, climb_spirals).chain().in_set(crate::clock::TickPhase::Motion));
     }
 }
 
@@ -482,6 +483,7 @@ impl NavGrid {
 
     /// A* from `from` to `to`; returns smoothed waypoints (excluding the start).
     pub fn find_path(&self, from: Vec2, to: Vec2) -> Option<Vec<Vec2>> {
+        let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::FindPath);
         let start = self.nearest_free(from)?;
         let goal = self.nearest_free(to)?;
         if start == goal {
@@ -670,6 +672,7 @@ fn rebuild_grid(
     mut upper: Option<ResMut<UpperFloors>>,
     spirals: Res<SpiralLinks>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::NavGrid);
     let Some(mut grid) = grid else { return };
     // (A frame after it's marked dirty: a wall, fence or object put in or taken out then is
     // spawned or gone by now.)
@@ -814,6 +817,7 @@ fn rebuild_upper_floors(
     upper: Option<Res<UpperFloors>>,
     grid: Option<ResMut<NavGrid>>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::UpperFloors);
     match (building, upper) {
         (Some(_), None) => {
             commands.insert_resource(UpperFloors::default());
@@ -1010,8 +1014,8 @@ pub fn floor_height(world: &crate::loading::WorldInfo, building: Option<&crate::
         // (The house's floor, or the floor of the lot being visited.)
         Some(b) if level > 1 || (level == 0 && b.data.basement.is_some()) => b
             .floor_y(level, p)
-            .or_else(|| b.away.as_deref().and_then(|a| a.floor_y(level, p)))
-            .unwrap_or_else(|| match b.away.as_deref().filter(|a| a.local(p).cmpge(Vec2::ZERO).all() && a.local(p).cmple(Vec2::new(a.data.width as f32, a.data.depth as f32)).all()) {
+            .or_else(|| b.away.values().find_map(|a| a.floor_y(level, p)))
+            .unwrap_or_else(|| match b.away.values().find(|a| a.local(p).cmpge(Vec2::ZERO).all() && a.local(p).cmple(Vec2::new(a.data.width as f32, a.data.depth as f32)).all()) {
                 Some(a) => a.levels.get(level as usize).copied().unwrap_or(p.y),
                 None => b.levels.get(level as usize).copied().unwrap_or(p.y),
             }),
@@ -1020,8 +1024,7 @@ pub fn floor_height(world: &crate::loading::WorldInfo, building: Option<&crate::
 }
 
 pub(crate) fn follow_paths(
-    time: Res<Time>,
-    clock: Res<GameClock>,
+    delta: Res<crate::clock::SimDelta>,
     world: Res<CurrentWorld>,
     building: Option<Res<crate::building::ActiveBuilding>>,
     mut commands: Commands,
@@ -1030,8 +1033,8 @@ pub(crate) fn follow_paths(
         (Without<crate::portraits::Staged>, Without<crate::dressing::ClothesSpin>, Without<SpiralClimb>),
     >,
 ) {
-    let rate = SPEED_RATES[clock.speed];
-    let dt = time.delta_secs().min(0.1) * rate;
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::FollowPaths);
+    let dt = delta.0;
     for (e, mut tf, mut pf, mut anim, mut floor, sim, pregnancy) in &mut q {
         if pf.done {
             continue;
@@ -1192,7 +1195,7 @@ fn spiral_links(
     let b = building.as_deref();
     now.extend(elevator_links(&stops, |level, p| {
         let at = Vec3::new(p.x, 0.0, p.y);
-        b.and_then(|b| b.floor_y(level, at).or_else(|| b.away.as_deref().and_then(|a| a.floor_y(level, at))))
+        b.and_then(|b| b.floor_y(level, at).or_else(|| b.away.values().find_map(|a| a.floor_y(level, at))))
     }));
     // (The walk grids rebuilt only for a change.)
     if now != links.0 {
@@ -1307,14 +1310,13 @@ const SPIRAL_DOWN: [&str; 3] = ["a2o_spiralStaircase_walkDown_start_x", "a2o_spi
 /// other end, on its floor, the route carrying on.
 #[allow(clippy::type_complexity)]
 pub(crate) fn climb_spirals(
+    delta: Res<crate::clock::SimDelta>,
     mut commands: Commands,
-    time: Res<Time>,
-    clock: Res<GameClock>,
     data: Res<crate::baked::Baked>,
     mut lib: ResMut<crate::anim::ClipLibrary>,
     mut q: Query<(Entity, &mut SpiralClimb, &mut Transform, &mut PathFollow, &mut SimAnim, &mut Floor, Option<&crate::sim::Sim>)>,
 ) {
-    let dt = time.delta_secs().min(0.1) * SPEED_RATES[clock.speed];
+    let dt = delta.0;
     for (e, mut s, mut tf, mut pf, mut anim, mut floor, sim) in &mut q {
         let child = sim.is_some_and(|s| s.age == crate::sim::Age::Child);
         s.time += dt;

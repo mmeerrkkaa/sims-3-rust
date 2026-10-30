@@ -22,7 +22,7 @@ use rand::Rng;
 use crate::PlayMode;
 use crate::anim::{ActionClip, ClipLibrary, ClipPlayer};
 use crate::baked::Baked;
-use crate::clock::{GameClock, SPEED_RATES};
+use crate::clock::GameClock;
 use crate::interact::{ActionKind, ActionQueue, Notifications, Skills};
 use crate::pets::{Pet, PetAnim, PetBonds};
 use crate::sim::{Pose, Sim, SimAnim};
@@ -31,8 +31,8 @@ pub struct RidingPlugin;
 
 impl Plugin for RidingPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (ride_test, dress).before(ride).run_if(in_state(PlayMode::Live)))
-            .add_systems(Update, (ride, in_step).chain().before(crate::anim::drive_skeletons).run_if(in_state(PlayMode::Live)))
+        app.add_systems(Update, (ride_test, dress).before(ride).run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay))
+            .add_systems(Update, (ride, in_step).chain().before(crate::anim::drive_skeletons).run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay))
             .add_systems(PostUpdate, seat_riders.before(bevy::transform::TransformSystems::Propagate).run_if(in_state(PlayMode::Live)));
     }
 }
@@ -250,7 +250,7 @@ fn idle(rng: &mut impl Rng) -> (&'static str, &'static [&'static str]) {
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn ride(
     mut commands: Commands,
-    (time, clock, delta): (Res<Time>, Res<GameClock>, Res<crate::clock::SimDelta>),
+    (clock, delta): (Res<GameClock>, Res<crate::clock::SimDelta>),
     (data, mut lib): (Res<Baked>, ResMut<ClipLibrary>),
     (grid, world, building): (Option<Res<crate::nav::NavGrid>>, Res<crate::loading::CurrentWorld>, Option<Res<crate::building::ActiveBuilding>>),
     mut sims: Query<(Entity, &Sim, &mut Mounted, &mut ActionQueue, &mut SimAnim, &mut Skills, Option<&crate::life::Mood>)>,
@@ -258,7 +258,7 @@ fn ride(
     (mut notes, mut life): (ResMut<Notifications>, MessageWriter<crate::life::LifeEvent>),
     (pet_data, mut assets, mut meshes, mut images, mut materials): (Res<crate::pets::PetData>, ResMut<crate::objects::ObjectAssets>, ResMut<Assets<Mesh>>, ResMut<Assets<Image>>, ResMut<Assets<StandardMaterial>>),
 ) {
-    let dt = time.delta_secs().min(0.1) * SPEED_RATES[clock.speed].min(3.0);
+    let dt = delta.capped(crate::clock::SPEED_RATES[clock.speed], 3.0);
     let mut rng = rand::rng();
     for (e, sim, mut m, mut queue, mut anim, mut skills, mood) in &mut sims {
         let Ok((pet, mut htf, mut hanim, motives, mut bonds, (skel, tack))) = horses.get_mut(m.horse) else {

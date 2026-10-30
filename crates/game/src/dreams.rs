@@ -533,6 +533,7 @@ fn life_events(mut life: MessageReader<crate::life::LifeEvent>, mut out: Message
 /// A social done (`kSocialInteraction`): for the one who did it and the one it was done to, by
 /// the game's name for it, taken well or not, and a fight's winner.
 pub fn social(w: &mut World, actor: Entity, target: Entity, name: &str, accepted: bool, actor_won: Option<bool>) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra41);
     let social = crate::conversation::game_key(name).to_string();
     for (me, other, recipient) in [(actor, target, false), (target, actor, true)] {
         w.write_message(DreamEvent {
@@ -549,6 +550,7 @@ pub fn social(w: &mut World, actor: Entity, target: Entity, name: &str, accepted
 /// Where each household Sim stands with everyone, by the game's levels: met someone new
 /// (`kMetSim`), a level changed (`kRelationshipLTRChanged`).
 fn relationship_events(sims: Query<(Entity, &Relationships), With<HouseholdMember>>, mut seen: Local<HashMap<(Entity, Entity), &'static str>>, mut out: MessageWriter<DreamEvent>, time: Res<Time>, mut last: Local<f32>) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra42);
     if time.elapsed_secs() - *last < 1.0 {
         return;
     }
@@ -576,6 +578,7 @@ fn wake_events(
     (mut asleep, mut seen): (Local<HashMap<Entity, f64>>, Local<std::collections::HashSet<Entity>>),
     mut out: MessageWriter<DreamEvent>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra43);
     for (e, q) in &sims {
         let sleeping = q.0.front().is_some_and(|a| matches!(a.label.as_str(), "Sleep" | "Nap") && matches!(a.phase, crate::interact::Phase::Running(_)));
         // (One asleep when the game's loaded: a night's sleep, as likely as not.)
@@ -596,6 +599,7 @@ fn wake_events(
 /// What each Sim's at, followed: an activity left (done or not) is the game's event for it, its
 /// hours the amount (`activity_kinds`).
 fn activity_events(sims: Query<(Entity, &crate::interact::ActionQueue), With<HouseholdMember>>, mut doing: Local<HashMap<Entity, (String, f32)>>, mut out: MessageWriter<DreamEvent>) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra44);
     for (e, q) in &sims {
         let now = q.0.front().and_then(|a| match a.phase {
             crate::interact::Phase::Running(t) => Some((a.label.clone(), t)),
@@ -638,6 +642,7 @@ fn state_events(
     mut seen: Local<StateSeen>,
     mut out: MessageWriter<DreamEvent>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra45);
     let now = clock.minutes;
     let first = !seen.ready;
     seen.ready = true;
@@ -794,6 +799,7 @@ fn activity_kinds(label: &str, minutes: f32) -> Vec<&'static str> {
 /// visible node in the trees), about that (a skill, a career, a category, a Sim by first name, a
 /// meal's or fish's key); WISH_OFFER=, offered instead.
 fn wish_test(mut sims: Query<&mut Dreams, With<crate::sim::Selected>>, people: Query<&Sim>, gu: Option<Res<crate::icons::GameUi>>, clock: Res<crate::clock::GameClock>, mut done: Local<bool>) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra46);
     if *done {
         return;
     }
@@ -846,6 +852,7 @@ fn wish_test(mut sims: Query<&mut Dreams, With<crate::sim::Selected>>, people: Q
 
 /// A child's or teen's wish made their lifetime wish, or left on offer.
 fn confirm_lifetime(mut commands: Commands, mut answers: MessageReader<crate::dialog::Answered>, mut sims: Query<(&Sim, &mut Dreams)>, mut notes: ResMut<crate::interact::Notifications>) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra47);
     for a in answers.read() {
         let crate::dialog::Question::ConfirmLifetimeWish { sim: e, wish, uid } = a.about else { continue };
         let Ok((sim, mut d)) = sims.get_mut(e) else { continue };
@@ -863,6 +870,7 @@ fn confirm_lifetime(mut commands: Commands, mut answers: MessageReader<crate::di
 
 /// PROMISE_WISHES=1: every wish offered promised, while there's a slot (to see them through).
 fn promise_test(mut sims: Query<&mut crate::wishes::Wishes, With<Dreams>>, on: Local<Option<bool>>) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra48);
     let mut on = on;
     if !*on.get_or_insert_with(|| std::env::var("PROMISE_WISHES").is_ok()) {
         return;
@@ -880,6 +888,7 @@ const NIGHT: f64 = 6.0 * 60.0;
 
 /// Every half hour, each Sim's heartbeat (`kSimHeartbeat`, `kDnPSynchronizeEvent`).
 fn heartbeat(sims: Query<Entity, With<Dreams>>, clock: Res<crate::clock::GameClock>, mut last: Local<f64>, mut out: MessageWriter<DreamEvent>) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra49);
     if clock.minutes - *last < FULL_UPDATE {
         return;
     }
@@ -905,6 +914,7 @@ fn run_dreams(
     (world, family, party, date): (Res<crate::loading::CurrentWorld>, Option<Res<crate::family::Genealogy>>, Option<Res<crate::parties::Party>>, Option<Res<crate::dates::Date>>),
     (plants, mut town): (Query<&crate::gardening::GrowingPlant>, Local<Option<(String, Town)>>),
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra50);
     let Some(gu) = gu else { return };
     let gdata = gu.data.clone();
     let data = &gdata.dnp;
@@ -1472,6 +1482,7 @@ fn sync_wishes(
     (gu, ui, family): (Option<Res<crate::icons::GameUi>>, Option<Res<crate::layout::UiAssets>>, Option<Res<crate::family::Genealogy>>),
     mut questions: ResMut<crate::dialog::Questions>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra51);
     let Some(gu) = gu else { return };
     let gdata = gu.data.clone();
     let data = &gdata.dnp;

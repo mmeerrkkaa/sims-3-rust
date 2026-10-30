@@ -24,6 +24,7 @@ impl Plugin for MusicPlugin {
 struct MusicLibrary(Vec<Handle<AudioSource>>);
 
 fn load_music(mut lib: ResMut<MusicLibrary>, mut sources: ResMut<Assets<AudioSource>>) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra86);
     if !lib.0.is_empty() {
         return;
     }
@@ -85,6 +86,7 @@ const WORKOUT_STATION: &str = "stereo_electronica";
 
 /// Working out to a stereo: it's put on its workout station, as the game's `SwitchToWorkOutChannel`.
 fn workout_station(mut commands: Commands, sims: Query<&crate::interact::ActionQueue>, objects: Query<(&crate::interact::GameObject, Option<&StereoOn>)>) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra87);
     for q in &sims {
         let Some(a) = q.current() else { continue };
         let crate::interact::ActionKind::Object { target, def } = a.kind else { continue };
@@ -139,6 +141,7 @@ fn stereo_music(
     mut sources: ResMut<Assets<AudioSource>>,
     settings: Res<crate::options::Settings>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra88);
     let cam = cams.single().ok();
     let level = settings.gain(crate::options::Channel::Music);
     // Stop music for stereos turned off (and nobody dancing to), changed to another station, or
@@ -233,6 +236,7 @@ fn favorite_music(
     mut sims: Query<(&crate::sim::Sim, &GlobalTransform, &mut crate::life::Moodlets)>,
     mut last: Local<f64>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra89);
     if clock.minutes - *last < 10.0 {
         return;
     }
@@ -254,6 +258,7 @@ pub fn stereo_volume(
     cams: Query<&SimsCamera>,
     settings: Res<crate::options::Settings>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra90);
     let Ok(cam) = cams.single() else { return };
     let level = settings.gain(crate::options::Channel::Music);
     for (m, mut sink) in &mut sinks {

@@ -7,7 +7,6 @@ use bevy::prelude::*;
 use s3formats::sim::Clip;
 
 use crate::PlayMode;
-use crate::clock::{GameClock, SPEED_RATES};
 use crate::baked::Baked;
 use crate::sim::{Pose, Sim, SimAnim};
 use crate::simbody::Skeleton;
@@ -17,7 +16,7 @@ pub struct AnimPlugin;
 impl Plugin for AnimPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ClipLibrary>()
-            .add_systems(Update, (commit_root_motion, drive_skeletons).chain().run_if(in_state(PlayMode::Live).or_else(in_state(crate::AppState::CreateHousehold))));
+            .add_systems(Update, (commit_root_motion, drive_skeletons).chain().run_if(in_state(PlayMode::Live).or_else(in_state(crate::AppState::CreateHousehold))).in_set(crate::clock::SimPhase::Gameplay));
     }
 }
 
@@ -223,6 +222,7 @@ pub fn rider_clip(name: &str) -> Option<Option<&'static str>> {
 
 /// A clip that carried the Sim somewhere is done: they're left there.
 pub fn commit_root_motion(mut sims: Query<(&mut Transform, &mut ClipPlayer), (With<Sim>, Without<ActionClip>)>) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::RootMotion);
     for (mut tf, mut player) in &mut sims {
         if player.root_offset.length_squared() > 1e-6 {
             let by = tf.rotation * player.root_offset;
@@ -392,7 +392,8 @@ pub fn clip_anchor(name: &str) -> Option<(Vec3, f32)> {
 
 pub fn drive_skeletons(
     time: Res<Time>,
-    clock: Res<GameClock>,
+    delta: Res<crate::clock::SimDelta>,
+    state: Res<State<crate::AppState>>,
     data: Res<Baked>,
     mut lib: ResMut<ClipLibrary>,
     mut sims: Query<(
@@ -416,7 +417,8 @@ pub fn drive_skeletons(
     mut arms: Local<HashMap<String, Arc<Vec<bool>>>>,
     mut partners: Local<HashMap<String, Arc<Vec<u32>>>>,
 ) {
-    let dt = time.delta_secs().min(0.1) * SPEED_RATES[clock.speed];
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Skeletons);
+    let dt = if *state.get() == crate::AppState::CreateHousehold { time.delta_secs().min(0.1) } else { delta.0 };
     for (entity, sim, anim, skel, action, mut player, on_floor, toddler, carrying, jogging, path, pregnancy, wolf, (face_overlay, mut talk_overlay)) in &mut sims {
         use crate::sim::Occult;
         let fast = matches!(path.filter(|p| !p.done).map(|p| p.now), Some(crate::nav::WalkStyle::Run | crate::nav::WalkStyle::FastRun | crate::nav::WalkStyle::FastJog));

@@ -67,7 +67,7 @@ fn turn_up(
     clock: Res<GameClock>,
     world: Res<crate::loading::CurrentWorld>,
     building: Option<Res<crate::building::ActiveBuilding>>,
-    visited: Option<Res<crate::visit::VisitedLot>>,
+    visited: Res<crate::visit::OpenLots>,
     mut asked: Query<(Entity, &Sim, &mut Meeting, &mut Transform, Option<&mut crate::nav::Floor>)>,
     callers: Query<(&Sim, Option<&crate::visit::OnLot>), Without<Meeting>>,
     mut starts: MessageWriter<crate::dates::StartDate>,
@@ -80,11 +80,11 @@ fn turn_up(
             commands.entity(e).remove::<Meeting>();
             continue;
         };
-        let here = on.is_some_and(|o| o.0 == m.lot) && visited.as_ref().is_some_and(|v| v.lot == m.lot && !v.grid.dirty);
+        let here = on.is_some_and(|o| o.0 == m.lot) && visited.0.get(&m.lot).is_some_and(|v| !v.grid.dirty);
         if here && m.caller_there.is_none() {
             m.caller_there = Some(now);
         }
-        if let (Some(t), Some(v)) = (m.caller_there, visited.as_ref())
+        if let (Some(t), Some(v)) = (m.caller_there, visited.0.get(&m.lot))
             && here
             && now >= t + TURN_UP_AFTER
         {

@@ -20,21 +20,21 @@ impl Plugin for InteractPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Notifications>()
             .add_systems(
-                Update,
+                crate::clock::SimTick,
                 (comings_and_goings, off_lot_idle, autonomy, run_actions, release_partners, motive_warnings, pay_bills, crate::social::note_contact, crate::social::fade_relationships)
                     .chain()
-                    .run_if(in_state(PlayMode::Live)),
+                    .in_set(crate::clock::TickPhase::Actions),
             )
-            .add_systems(Update, (route_objects, crate::social::load_game_socials).run_if(in_state(crate::AppState::InGame)))
+            .add_systems(Update, (route_objects, crate::social::load_game_socials).run_if(in_state(crate::AppState::InGame)).in_set(crate::clock::SimPhase::Prepare))
             .init_resource::<RepairTunings>()
             .init_resource::<ObjectRates>()
             .init_resource::<crate::conversation::SocialMemories>()
-            .add_systems(Update, note_recent.run_if(in_state(PlayMode::Live)))
+            .add_systems(Update, note_recent.run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Prepare))
             .init_resource::<DepreciationDay>()
             .add_systems(OnEnter(crate::AppState::Loading), |mut day: ResMut<DepreciationDay>| day.0 = None)
-            .add_systems(Update, depreciate.after(crate::save::apply_loaded_game).run_if(in_state(PlayMode::Live)))
-            .add_systems(Update, (load_repair_tunings, wear_new_objects, floor_new_objects, second_places).chain().run_if(in_state(crate::AppState::InGame)))
-            .add_systems(Update, load_skill_points.run_if(in_state(crate::AppState::InGame)));
+            .add_systems(Update, depreciate.after(crate::save::apply_loaded_game).run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Prepare))
+            .add_systems(Update, (load_repair_tunings, wear_new_objects, floor_new_objects, second_places).chain().run_if(in_state(crate::AppState::InGame)).in_set(crate::clock::SimPhase::Prepare))
+            .add_systems(Update, load_skill_points.run_if(in_state(crate::AppState::InGame)).in_set(crate::clock::SimPhase::Prepare));
     }
 }
 
@@ -3339,6 +3339,7 @@ fn comings_and_goings(
     (town, mut household, mut notes, members): (Option<Res<crate::premade::TownPremades>>, Option<ResMut<Household>>, ResMut<Notifications>, Query<(), With<HouseholdMember>>),
     (building, party): (Option<Res<crate::building::ActiveBuilding>>, Option<Res<Party>>),
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Arrivals);
     for (e, mut sim, j) in &mut joining {
         if let Some(l) = &j.last_name {
             sim.last = l.clone();
@@ -3356,7 +3357,7 @@ fn comings_and_goings(
                 notes.push(format!("{} brought §{} into the household.", sim.first, crate::lifetime::group(share)));
             }
         }
-        commands.entity(e).remove::<(JoinHousehold, Visitor, GoingHome, OffLot)>().insert(HouseholdMember);
+        commands.entity(e).remove::<(JoinHousehold, Visitor, GoingHome, OffLot, crate::town::Townie)>().insert(HouseholdMember);
     }
     let Some(exit) = exit else { return };
     for (e, v, motives, sim, at_door, staying) in &mut visitors {
@@ -3399,8 +3400,8 @@ fn comings_and_goings(
             // the town's Sims met out and about have.)
             commands
                 .entity(e)
-                .remove::<(Invited, OffLot)>()
-                .insert((Visibility::Inherited, Visitor { leave_at }))
+                .remove::<(Invited, OffLot, crate::town::Townie, crate::visit::LotGuest, crate::visit::OnLot, crate::homes::Resident, crate::nav::PathFollow)>()
+                .insert((Visibility::Inherited, crate::nav::Floor(1), Visitor { leave_at }))
                 .insert_if_new((AutonomyTimer(rand::rng().random_range(0.5..3.0)), Skills::default()));
             // To the front door, to ring and be let in (a party's guests come straight in).
             let partying = party.is_some();
@@ -3483,7 +3484,7 @@ pub(crate) fn run_actions(
     (building, upper, visited, privacy, locks, cars): (
         Option<Res<crate::building::ActiveBuilding>>,
         Option<Res<UpperFloors>>,
-        Option<Res<crate::visit::VisitedLot>>,
+        Res<crate::visit::OpenLots>,
         Res<crate::privacy::Privacy>,
         Query<(Entity, &crate::doorlocks::DoorLock)>,
         Query<(&GameObject, &Transform), (Without<Sim>, Without<crate::visit::LotObject>, Without<crate::traffic::CarOut>)>,
@@ -3527,6 +3528,7 @@ pub(crate) fn run_actions(
         ),
     ),
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Actions);
     let Some(grid) = grid else { return };
     let dt = delta.0;
     let ground = |level: u8, x: f32, z: f32| crate::nav::floor_height(&world.data, building.as_deref(), level, Vec3::new(x, 0.0, z));
@@ -3565,7 +3567,7 @@ pub(crate) fn run_actions(
     for (me, sim, mut queue, mut tf, mut motives, mut decay, mut anim, mut skills, mut rels, path, mut job, floor, (wishes, plan, moodlets, pregnancy, mut homework, (wearing, spinning)), opps, on_lot) in &mut sims {
         let mood_learning = who.get(&me).map_or(1.0, |(_, mood, _, _)| mood.skill_rate());
         // Out on a community lot: its walk grid and way out.
-        let away = on_lot.and_then(|o| visited.as_deref().filter(|v| v.lot == o.0));
+        let away = on_lot.and_then(|o| visited.0.get(&o.0));
         let (my_grid, my_upper): (&NavGrid, Option<&UpperFloors>) = match away {
             Some(v) => (&v.grid, Some(&v.upper)),
             None => (&grid, upper.as_deref()),
@@ -6723,13 +6725,14 @@ fn autonomy(
             Query<(), With<crate::homes::Resident>>,
             Res<crate::trashcans::CanOwners>,
             Query<(), With<crate::trashcans::TippedOver>>,
-            Option<Res<crate::visit::VisitedLot>>,
+            Res<crate::visit::OpenLots>,
             Query<&crate::computertraits::WorkToDo>,
             Res<crate::meals::FridgeKeeps>,
             Query<&crate::paintings::LeftOnEasel>,
         ),
     ),
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Autonomy);
     if delta.0 <= 0.0 {
         return;
     }
@@ -7074,7 +7077,7 @@ fn autonomy(
                 // the Neat keen to.)
                 if obj.kind == ObjectKind::OutdoorTrashCan {
                     let owner = can_owners.0.get(&oe).cloned().unwrap_or_default();
-                    let home = crate::trashcans::home_of(household.contains(me), residents_q.contains(me), visited_lot.as_ref().map(|v| v.lot));
+                    let home = crate::trashcans::home_of(household.contains(me), residents_q.contains(me), my_lot.filter(|l| visited_lot.0.contains_key(l)));
                     let at_home = home == Some(owner.lot);
                     let tipped = tipped_q.contains(oe);
                     match d.special {
@@ -7662,7 +7665,7 @@ mod tests {
                 .insert_resource(Household { name: "Test".into(), funds: 1000, lot_index: 0, last_bill_day: 0, bills: Vec::new() })
                 .init_resource::<Notifications>()
                 .init_resource::<crate::repoman::RepoDue>()
-                .add_systems(Update, pay_bills);
+                .add_systems(Update, pay_bills.in_set(crate::clock::SimPhase::Prepare));
             if mailbox {
                 app.world_mut().spawn(GameObject { kind: ObjectKind::Mailbox, name: "Mailbox".into(), objd: (0, 0, 0), price: 0,
                     center: Vec2::ZERO, half: Vec2::ONE, height: 1.0, route: None });
@@ -7770,7 +7773,7 @@ mod tests {
         app.insert_resource(clock)
             .insert_resource(Household { name: "Test".into(), funds: 1000, lot_index: 0, last_bill_day: 0, bills: Vec::new() })
             .init_resource::<DepreciationDay>()
-            .add_systems(Update, depreciate);
+            .add_systems(Update, depreciate.in_set(crate::clock::SimPhase::Prepare));
         let object = |price| GameObject { kind: ObjectKind::Sofa, name: "Sofa".into(), objd: (0, 0, 0), price, center: Vec2::ZERO, half: Vec2::ONE, height: 1.0, route: None };
         let home = app.world_mut().spawn(object(1000)).id();
         let away = app.world_mut().spawn((object(1000), crate::visit::LotObject(1))).id();

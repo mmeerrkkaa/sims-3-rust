@@ -38,7 +38,7 @@ pub struct ReactionsPlugin;
 
 impl Plugin for ReactionsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<Spectacle>().add_systems(Update, (smelly_about, accidents, deaths, on_moodlets, weather, play, turn, seated).chain().run_if(in_state(PlayMode::Live)));
+        app.add_message::<Spectacle>().add_systems(Update, (smelly_about, accidents, deaths, on_moodlets, weather, play, turn, seated).chain().run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay));
     }
 }
 
@@ -105,7 +105,7 @@ fn spot(tf: &Transform, floor: Option<&Floor>, lot: Option<&OnLot>) -> Spot {
 struct Sight<'w> {
     grid: Option<Res<'w, NavGrid>>,
     upper: Option<Res<'w, UpperFloors>>,
-    visited: Option<Res<'w, crate::visit::VisitedLot>>,
+    visited: Res<'w, crate::visit::OpenLots>,
 }
 
 impl Sight<'_> {
@@ -116,7 +116,7 @@ impl Sight<'_> {
             return false;
         }
         let grid = match a.lot {
-            Some(l) => self.visited.as_deref().filter(|v| v.lot == l).and_then(|v| if a.floor == 1 { Some(&v.grid) } else { v.upper.grids.get(&a.floor) }),
+            Some(l) => self.visited.0.get(&l).and_then(|v| if a.floor == 1 { Some(&v.grid) } else { v.upper.grids.get(&a.floor) }),
             None if a.floor == 1 => self.grid.as_deref(),
             None => self.upper.as_deref().and_then(|u| u.grids.get(&a.floor)),
         };
@@ -168,6 +168,7 @@ fn smelly_about(
     mut next: Local<f64>,
     mut sims: Query<(Entity, &Sim, &Transform, Option<&Floor>, Option<&OnLot>, &mut Moodlets, &SimAnim, &InheritedVisibility)>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra0);
     if clock.minutes < *next {
         return;
     }
@@ -203,6 +204,7 @@ fn accidents(
     mut seen: MessageReader<Spectacle>,
     mut sims: Query<(Entity, &Sim, &Transform, Option<&Floor>, Option<&OnLot>, Option<&mut Moodlets>, Option<&Relationships>, &InheritedVisibility)>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra1);
     let mut rng = rand::rng();
     for s in seen.read() {
         let Spectacle::Accident(who) = *s;
@@ -244,6 +246,7 @@ fn deaths(
         (Without<crate::death::Dying>, Without<crate::death::GrimReaper>),
     >,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra2);
     for (dead, tf, f, l, family) in &dying {
         let there = spot(tf, f, l);
         for (e, sim, tf, f, l, mut m, rels, member, shown) in &mut sims {
@@ -285,6 +288,7 @@ fn weather(
     mut seen: Local<Option<f64>>,
     sims: Query<(Entity, &Sim, &Transform, &InheritedVisibility), Without<crate::swim::Swimming>>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra3);
     use crate::weather::WeatherKind;
     let Some(w) = weather else { return };
     let kind = match w.kind {
@@ -326,6 +330,7 @@ fn reacted_moodlets(m: &Moodlets) -> u8 {
 
 /// A reaction to a moodlet just come (not those a Sim had when first seen: a game loaded).
 fn on_moodlets(mut commands: Commands, clock: Res<GameClock>, mut had: Local<HashMap<Entity, u8>>, sims: Query<(Entity, &Moodlets), Changed<Moodlets>>) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra4);
     for (e, m) in &sims {
         let now = reacted_moodlets(m);
         let Some(before) = had.insert(e, now) else { continue };
@@ -387,6 +392,7 @@ fn play(
     objects: Query<&crate::interact::GameObject>,
     (mut known, mut names): (Local<Option<HashSet<String>>>, Local<HashMap<String, &'static [&'static str]>>),
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra5);
     let Some(ui) = ui else { return };
     let known = known.get_or_insert_with(|| data.0.clip_names.iter().map(|n| n.to_ascii_lowercase()).collect());
     let mut rng = rand::rng();
@@ -450,8 +456,10 @@ fn play(
 }
 
 /// A seated reaction over: back to what they were doing there (if they're still at it).
-fn seated(mut commands: Commands, time: Res<Time>, clock: Res<GameClock>, mut sims: Query<(Entity, &mut SeatedReaction, &ActionQueue, &SimAnim)>) {
-    let dt = time.delta_secs().min(0.1) * crate::clock::SPEED_RATES[clock.speed];
+fn seated(
+    delta: Res<crate::clock::SimDelta>,mut commands: Commands, mut sims: Query<(Entity, &mut SeatedReaction, &ActionQueue, &SimAnim)>) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra6);
+    let dt = delta.0;
     for (e, mut s, queue, anim) in &mut sims {
         s.left -= dt;
         let still = anim.pose == Pose::Sit && queue.0.front().is_some_and(|a| a.label == s.label && matches!(a.phase, Phase::Running(_)));
@@ -470,6 +478,7 @@ fn seated(mut commands: Commands, time: Res<Time>, clock: Res<GameClock>, mut si
 
 /// Turning to face what they react to, as the reaction starts.
 fn turn(mut commands: Commands, time: Res<Time>, mut sims: Query<(Entity, &mut Transform, &Facing, &ActionQueue)>) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra7);
     for (e, mut tf, f, queue) in &mut sims {
         tf.rotation = tf.rotation.slerp(f.0, (time.delta_secs() * 8.0).min(1.0));
         let reacting = queue.0.front().is_some_and(|a| matches!(a.kind, ActionKind::Outro { .. }));

@@ -124,7 +124,7 @@ pub struct HotDrinksPlugin;
 
 impl Plugin for HotDrinksPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, trays.after(crate::interact::run_actions).run_if(in_state(crate::PlayMode::Live)));
+        app.add_systems(crate::clock::SimTick, trays.after(crate::interact::run_actions).run_if(in_state(crate::PlayMode::Live)));
     }
 }
 

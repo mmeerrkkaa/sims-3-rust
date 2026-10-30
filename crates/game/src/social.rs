@@ -91,6 +91,7 @@ pub fn fade_relationships(
     mut q: Query<(Entity, &crate::sim::Sim, &mut Relationships, Has<crate::sim::HouseholdMember>, Option<&crate::wishes::Wishes>, Option<&crate::journal::SkillJournal>)>,
     family: Res<crate::family::Genealogy>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::FadeRelationships);
     let hour = (clock.minutes / 60.0) as i64;
     if hour == *last_hour {
         return;

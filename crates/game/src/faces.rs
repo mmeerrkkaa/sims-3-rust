@@ -10,7 +10,7 @@ use rand::seq::IndexedRandom;
 
 use crate::PlayMode;
 use crate::anim::{ClipLibrary, FaceOverlay};
-use crate::clock::{GameClock, SPEED_RATES};
+use crate::clock::GameClock;
 use crate::life::{Mood, MoodletKind as M, Moodlets, Trait};
 use crate::sim::{Pose, Sim, SimAnim};
 
@@ -18,7 +18,7 @@ pub struct FacesPlugin;
 
 impl Plugin for FacesPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, faces.run_if(in_state(PlayMode::Live)));
+        app.add_systems(Update, faces.run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay));
     }
 }
 
@@ -50,16 +50,17 @@ fn feeling(sim: &Sim, mood: f32, moodlets: Option<&Moodlets>, rng: &mut impl Rng
 
 #[allow(clippy::type_complexity)]
 fn faces(
+    delta: Res<crate::clock::SimDelta>,
     mut commands: Commands,
-    time: Res<Time>,
     clock: Res<GameClock>,
     ui: Option<Res<crate::icons::GameUi>>,
     data: Res<crate::baked::Baked>,
     mut lib: ResMut<ClipLibrary>,
     mut sims: Query<(Entity, &Sim, &SimAnim, &Mood, Option<&Moodlets>, Option<&mut FaceOverlay>, Option<&mut NextFace>, &InheritedVisibility)>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Faces);
     let Some(ui) = ui else { return };
-    let dt = time.delta_secs().min(0.1) * SPEED_RATES[clock.speed];
+    let dt = delta.0;
     let mut rng = rand::rng();
     for (e, sim, anim, mood, moodlets, overlay, next, shown) in &mut sims {
         // An expression under way, until its clip's done.

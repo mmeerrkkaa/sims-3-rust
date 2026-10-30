@@ -56,6 +56,7 @@ pub fn cleanable(kind: ObjectKind) -> bool {
 
 /// Bathroom things start clean.
 fn grime_objects(mut commands: Commands, objects: Query<(Entity, &GameObject), Without<Grime>>) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra97);
     for (e, o) in &objects {
         if cleanable(o.kind) {
             commands.entity(e).insert(Grime::default());
@@ -78,6 +79,7 @@ fn dirty_looks(
     up: Query<&ChildOf>,
     objects: Query<(&GameObject, Option<&Grime>, Has<Broken>, Has<Charred>)>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra98);
     use s3formats::model::{STATE_BURNT, STATE_CLOGGED, STATE_DIRTY, STATE_VERY_DIRTY};
     for (mut states, mut mat, parent) in &mut parts {
         // (The object: the part's model's parent, or the model itself.)

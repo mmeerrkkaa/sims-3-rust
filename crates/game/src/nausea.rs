@@ -14,7 +14,7 @@ pub struct NauseaPlugin;
 
 impl Plugin for NauseaPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (be_sick, threw_up, nausea_test).before(crate::interact::run_actions).run_if(in_state(PlayMode::Live)));
+        app.add_systems(crate::clock::SimTick, (be_sick, threw_up, nausea_test).before(crate::interact::run_actions).run_if(in_state(PlayMode::Live)));
     }
 }
 

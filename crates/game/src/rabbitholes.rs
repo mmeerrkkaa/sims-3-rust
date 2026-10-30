@@ -17,7 +17,7 @@ pub struct RabbitHolePlugin;
 
 impl Plugin for RabbitHolePlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (school_bus, outings, told_homework).chain().after(crate::save::apply_loaded_game).run_if(in_state(PlayMode::Live)));
+        app.add_systems(Update, (school_bus, outings, told_homework).chain().after(crate::save::apply_loaded_game).run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay));
     }
 }
 
@@ -628,7 +628,7 @@ mod school_schedule_tests {
     fn bus_classroom_hours_and_weekends_follow_student_age() {
         for (age, end, classroom_minutes) in [(Age::Child, 15.0, 360.0), (Age::Teen, 14.0, 300.0)] {
             let mut app = App::new();
-            app.init_resource::<GameClock>().init_resource::<Notifications>().add_message::<crate::sound::PlaySound>().add_systems(Update, school_bus);
+            app.init_resource::<GameClock>().init_resource::<Notifications>().add_message::<crate::sound::PlaySound>().add_systems(Update, school_bus.in_set(crate::clock::SimPhase::Gameplay));
             let mut rng = rand::rngs::StdRng::seed_from_u64(33);
             let sim = crate::sim::random_sim(&mut rng, "School", Some(false), age);
             let e = app.world_mut().spawn((sim, HouseholdMember, ActionQueue::default())).id();

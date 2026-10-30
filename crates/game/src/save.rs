@@ -35,7 +35,7 @@ impl Plugin for SavePlugin {
             })
             .add_systems(Update, (restore_broken, restore_states).after(apply_loaded_game).run_if(in_state(PlayMode::Live)))
             .add_systems(Update, resume_saved_lot.run_if(in_state(PlayMode::ChooseLot)))
-            .add_systems(Update, (apply_loaded_game.after(crate::clock::advance_clock), save_game.after(crate::buyhistory::update)).run_if(in_state(PlayMode::Live)));
+            .add_systems(Update, (apply_loaded_game.in_set(crate::clock::SimPhase::Restore).after(crate::clock::advance_clock), save_game.in_set(crate::clock::SimPhase::Save).after(crate::buyhistory::update)).run_if(in_state(PlayMode::Live)));
     }
 }
 
@@ -62,6 +62,9 @@ pub struct SavedSim {
     pub selected: bool,
     /// "home", "visiting" or "away".
     pub whereabouts: String,
+    /// Persistent open-world location; absent in saves predating multi-lot simulation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub world_location: Option<s3sim::residents::WorldLocation>,
     pub position: [f32; 3],
     pub yaw: f32,
     pub floor: u8,
@@ -499,6 +502,8 @@ pub struct SaveGame {
     #[serde(default)]
     pub bills: Vec<crate::interact::Bill>,
     pub minutes: f64,
+    #[serde(default)]
+    pub timeline: s3sim::time::Timeline,
     pub sims: Vec<SavedSim>,
     /// Objects bought in buy mode.
     pub bought: Vec<SavedObject>,
@@ -673,6 +678,7 @@ pub(crate) fn saved_look(sim: &Sim) -> SavedSim {
         member: false,
         selected: false,
         whereabouts: "away".into(),
+        world_location: None,
         position: [0.0; 3],
         yaw: 0.0,
         floor: 1,
@@ -1008,7 +1014,7 @@ fn save_game(
                 Option<&crate::aging::Aging>,
                 Option<&crate::little::Pregnancy>,
                 Option<&crate::opportunities::SimOpportunities>,
-                Has<crate::visit::OnLot>,
+                (Option<&crate::visit::OnLot>, Has<crate::visit::Trip>),
                 Option<&crate::lifetime::LifetimeWish>,
                 Option<&crate::writing::Author>,
                 Option<&crate::meals::KnownRecipes>,
@@ -1035,7 +1041,7 @@ fn save_game(
         ),
         Without<crate::services::ServiceNpc>,
     >,
-    (bought, exit, graves, ghosts): (
+    (bought, _exit, graves, ghosts): (
         Query<(&GameObject, &Transform, Option<&crate::objects::Design>, Option<&crate::paintings::Hung>), With<Bought>>,
         Option<Res<crate::interact::LotExit>>,
         Query<(Entity, &crate::ghosts::Grave, &Transform), Without<crate::buyhistory::HistoryHidden>>,
@@ -1092,11 +1098,7 @@ fn save_game(
             debug!("saving {} during portrait: scene {:?}, gameplay {:?}", sim.first, tf.translation, s.original.translation);
         }
         let tf = staged.map_or(tf, |s| &s.original);
-        // Out on a community lot: saved as back at home (the lot isn't kept).
-        let (position, level) = match (out, exit.as_ref()) {
-            (true, Some(x)) => ([x.0.x, world.data.heightmap.sample(x.0.x, x.0.y), x.0.y], 1),
-            _ => (tf.translation.to_array(), floor.0),
-        };
+        let (position, level) = (tf.translation.to_array(), floor.0);
         let guid = |i: usize| ui.as_ref().and_then(|u| u.data.opportunities.get(i)).map(|o| o.guid.clone());
         saved.push(SavedSim {
             id: sim.id,
@@ -1113,6 +1115,7 @@ fn save_game(
             member,
             selected,
             whereabouts: if member { "home" } else if away { "away" } else if visiting { "visiting" } else { "away" }.into(),
+            world_location: crate::visit::saved_location(&world.data, out.0, out.1, rabbit),
             position,
             yaw: tf.rotation.to_euler(EulerRot::YXZ).0,
             floor: level,
@@ -1230,6 +1233,7 @@ fn save_game(
         // (Bills still in the mail count as come.)
         bills: hh.bills.iter().cloned().chain(mail_due.as_ref().map(|m| m.0.clone())).collect(),
         minutes: clock.minutes,
+        timeline: clock.timeline.clone(),
         sims: saved,
         bought: bought.iter().map(|(o, tf, d, h)| saved_object(o, tf, d, h)).collect(),
         removed: removed.0.clone(),
@@ -1377,6 +1381,8 @@ pub(crate) fn apply_loaded_game(
     }
     let game = &p.0;
     clock.minutes = game.minutes;
+    clock.timeline = game.timeline.clone();
+    clock.restored = true;
     // The clock was replaced, so this frame's pre-load elapsed time must not
     // advance restored temperature, recovery timers, or other simulation state.
     delta.0 = 0.0;
@@ -1534,6 +1540,7 @@ pub(crate) fn apply_loaded_game(
         } else {
             ec.remove::<Selected>();
         }
+        crate::visit::restore_location(&mut ec, &world.data, s, game.minutes);
     }
     // Furniture: take away what was sold, put back what was bought.
     // (By where it stood on the ground: the starter deck's furniture stands higher than it did

@@ -13,9 +13,10 @@ impl Plugin for SimPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SimAssets>()
             .add_systems(Startup, init_sim_assets)
+            .add_systems(crate::clock::SimTick, decay_motives.in_set(crate::clock::TickPhase::Needs))
             .add_systems(
                 Update,
-                (decay_motives, animate_bodies, update_plumbobs).run_if(in_state(PlayMode::Live)),
+                (animate_bodies, update_plumbobs).run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay),
             );
     }
 }
@@ -767,6 +768,7 @@ fn decay_motives(
         Without<crate::interact::OffLot>,
     >,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Needs);
     let hours = delta.0 / 60.0;
     // (The testing cheats' "Toggle Motive Decay": as they are.)
     if hours <= 0.0 || crate::cheats::no_decay() {
@@ -829,7 +831,7 @@ mod reward_motive_tests {
     #[test]
     fn lifetime_rewards_apply_to_normal_decay_and_restored_low_needs() {
         let mut app = App::new();
-        app.insert_resource(SimDelta(60.0)).add_systems(Update, decay_motives);
+        app.insert_resource(SimDelta(60.0)).add_systems(Update, decay_motives.in_set(crate::clock::SimPhase::Gameplay));
         let mut sim = random_sim(&mut rand::thread_rng(), "Test", Some(false), Age::Adult);
         sim.traits.clear();
         let plain = app.world_mut().spawn((sim.clone(), Motives([50.0; 6]), DecayScale::default())).id();
@@ -860,6 +862,7 @@ fn animate_bodies(
     mut sims: Query<(&mut SimAnim, &SimBody)>,
     mut tfs: Query<&mut Transform, Without<SimAnim>>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Bodies);
     let paused = delta.0 <= 0.0;
     for (mut anim, body) in &mut sims {
         if !paused {

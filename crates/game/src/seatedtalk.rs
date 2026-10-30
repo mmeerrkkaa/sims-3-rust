@@ -36,6 +36,7 @@ pub struct TalkOverlay {
 /// A talk whose social is over (finished, cancelled, the queue cleared for something else) comes
 /// off them.
 fn talk_over(mut commands: Commands, talks: Query<(Entity, &TalkOverlay)>, queues: Query<&ActionQueue>) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra61);
     for (e, t) in &talks {
         let (actor, target) = if t.talking { (e, t.with) } else { (t.with, e) };
         let on = queues.get(actor).is_ok_and(|q| q.0.front().is_some_and(|a| matches!(a.kind, ActionKind::Social { target: s, .. } if s == target)));
@@ -191,6 +192,7 @@ fn relax_loops(near: bool) -> crate::anim::ActionClip {
 pub struct LieBack;
 
 fn lie_back(mut commands: Commands, sims: Query<(Entity, &crate::anim::ClipPlayer, &SimAnim), With<LieBack>>) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra62);
     for (e, player, anim) in &sims {
         if anim.pose != Pose::Lie {
             commands.entity(e).remove::<LieBack>();
@@ -268,6 +270,7 @@ fn seated_chatter(
     mut next: Local<std::collections::HashMap<Entity, f64>>,
     selected: Query<(), With<crate::sim::Selected>>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra63);
     if settings.free_will == crate::options::FreeWill::Off || clock.speed == 0 {
         return;
     }

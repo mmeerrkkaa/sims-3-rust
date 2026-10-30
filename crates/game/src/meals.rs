@@ -53,6 +53,7 @@ pub struct MicrowaveDone(pub Entity);
 /// Heated, the dinner is taken out of the microwave (then eaten at the table): a Microwave
 /// Meal, unless something else went in.
 fn take_out_dinner(mut commands: Commands, mut sims: Query<(Entity, &MicrowaveDone, &mut ActionQueue, Has<MealPlan>)>, ui: Option<Res<crate::icons::GameUi>>) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra65);
     for (e, m, mut queue, planned) in &mut sims {
         commands.entity(e).remove::<MicrowaveDone>();
         if !planned && let Some(r) = ui.as_ref().and_then(|u| u.data.recipes.iter().position(|r| r.snack && r.microwave)) {
@@ -85,6 +86,7 @@ fn come_to_meal(
     meals: Query<&Meal>,
     mut notes: ResMut<Notifications>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra66);
     let Some(c) = call else { return };
     commands.remove_resource::<MealCall>();
     let Ok(m) = meals.get(c.platter) else { return };
@@ -112,6 +114,7 @@ fn come_to_meal(
 
 /// A meal carried off and not set down after all (the cook called away) is served anyway.
 fn serve_if_interrupted(mut commands: Commands, sims: Query<(Entity, &ServingFrom, &ActionQueue), Without<MealRequest>>) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra67);
     for (e, from, queue) in &sims {
         if !queue.current().is_some_and(|a| a.label == "Set Down Meal") {
             commands.entity(e).insert(MealRequest::Serve(from.0));
@@ -127,6 +130,7 @@ fn within_reach(o: &GameObject, tf: &Transform, at: Vec3) -> bool {
 
 /// A counter or table near a point (the one the meal is set down on).
 fn surface_entity_near(objects: &Query<(Entity, &GameObject, &Transform, &UsedBy)>, at: Vec3, within: f32) -> Option<Entity> {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra68);
     objects
         .iter()
         .filter(|(_, o, tf, _)| within_reach(o, tf, at))
@@ -150,6 +154,7 @@ fn cook_prep(
     mut sims: Query<(Entity, &Transform, &mut ActionQueue), Without<CookPrepped>>,
     objects: Query<(Entity, &GameObject, &Transform, &UsedBy), Without<crate::interact::Broken>>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra69);
     for (e, tf, mut queue) in &mut sims {
         let Some(front) = queue.0.front_mut() else { continue };
         if !matches!(front.phase, crate::interact::Phase::Start | crate::interact::Phase::Routing) || front.cancel {
@@ -185,6 +190,7 @@ fn cook_prep(
 
 /// Once the cooking's done (or given up), the next meal is prepared afresh.
 fn cook_prep_done(mut commands: Commands, sims: Query<(Entity, &ActionQueue), With<CookPrepped>>, objects: Query<&GameObject>) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra70);
     for (e, queue) in &sims {
         if !queue.current().is_some_and(|a| {
             let ActionKind::Object { target, def } = a.kind else { return false };
@@ -209,6 +215,7 @@ pub struct PizzaOrder {
 /// stove), or the surface nearest the curb, with a slice for everyone. (The delivery brings it:
 /// see `services`.)
 pub fn pizza_spot(objects: &Query<(Entity, &GameObject, &Transform, &UsedBy)>, curb: Vec3) -> Option<Vec3> {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra71);
     let near = objects.iter().find(|(_, o, _, _)| o.kind == ObjectKind::Stove).map(|(_, o, tf, _)| o.world_center(tf)).unwrap_or(curb);
     surface_near(objects, near, 12.0)
 }
@@ -379,6 +386,7 @@ fn learn_recipes(
     mut sims: Query<(Entity, &Sim, &BuyingRecipe, Option<&mut KnownRecipes>, Option<&crate::wishes::Wishes>), With<RecipeBookBought>>,
     mut notes: ResMut<Notifications>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra72);
     for (e, sim, buying, known, wishes) in &mut sims {
         commands.entity(e).remove::<(BuyingRecipe, RecipeBookBought)>();
         let Some(r) = ui.as_ref().and_then(|u| u.data.recipes.get(buying.0)) else { continue };
@@ -414,6 +422,7 @@ fn cut_cakes(
     cakes: Query<(Entity, &Transform), With<CakeBlownOut>>,
     sims: Query<(Entity, &Transform, &ActionQueue), (With<HouseholdMember>, Without<crate::aging::GrowUpNow>)>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra73);
     for (cake, ctf) in &cakes {
         commands.entity(cake).remove::<CakeBlownOut>().insert(Meal { servings: 6 }).queue_silenced(|mut w: EntityWorldMut| {
             if let Some(mut g) = w.get_mut::<GameObject>() {
@@ -568,6 +577,7 @@ fn restore_meals(
     data: Res<Baked>, catalog: Res<Catalog>, mut assets: ResMut<ObjectAssets>,
     mut meshes: ResMut<Assets<Mesh>>, mut images: ResMut<Assets<Image>>, mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra74);
     let (Some(pending), Some(ui)) = (pending, ui) else { return };
     let mut ctx = AssetCtx { baked: &data.0, meshes: &mut meshes, images: &mut images, materials: &mut materials };
     for saved in &pending.0 {
@@ -639,6 +649,7 @@ fn update_eating_plates(
     data: Res<Baked>, mut assets: ResMut<ObjectAssets>,
     mut meshes: ResMut<Assets<Mesh>>, mut images: ResMut<Assets<Image>>, mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra75);
     let Some(ui) = ui else { return };
     let mut ctx = AssetCtx { baked: &data.0, meshes: &mut meshes, images: &mut images, materials: &mut materials };
     for (plate, dish, queue) in &diners {
@@ -663,6 +674,7 @@ fn update_platters(
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra76);
     let Some(ui) = ui else { return };
     let mut ctx = AssetCtx { baked: &data.0, meshes: &mut meshes, images: &mut images, materials: &mut materials };
     for (entity, meal, dish, food) in &plates {
@@ -688,6 +700,7 @@ fn probe_platters(
     mut state: Local<(u8, Option<Entity>, Option<Entity>)>,
     (mut single, single_food, mut queues): (Local<Option<(Entity, Entity, Entity)>>, Query<(&DishFood, Has<HalfPlate>)>, Query<&mut ActionQueue>),
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra77);
     if std::env::var_os("HALF_MEAL_TEST").is_none() || state.0 == 4 || time.elapsed_secs() < 6.0 { return; }
     let Some(ui) = ui else { return };
     if std::env::var("HALF_MEAL_TEST").as_deref() == Ok("restore") {
@@ -770,6 +783,7 @@ fn probe_meal_budget(
     objects: Query<(Entity, &GameObject)>, mut selected: Query<(Entity, &mut ActionQueue), With<crate::sim::Selected>>,
     notes: Res<Notifications>, mut state: Local<(u8, usize)>, fridge: Res<crate::ingredients::Fridge>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra78);
     if std::env::var_os("MEAL_BUDGET_TEST").is_none() || state.0 == 3 || time.elapsed_secs() < 6.0 { return; }
     let (Some(ui), Some(mut funds), Ok((sim, mut queue))) = (ui, funds, selected.single_mut()) else { return };
     let count = objects.iter().filter(|(_, o)| matches!(o.kind, ObjectKind::Meal | ObjectKind::BirthdayCake)).count();
@@ -899,6 +913,7 @@ fn fridge_keeps(
     fridges: Query<&GameObject, Without<crate::visit::LotObject>>,
     data: Option<Res<crate::baked::Baked>>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra79);
     let now = time.elapsed_secs();
     if now - *last < 5.0 {
         return;
@@ -923,6 +938,7 @@ pub const PLATE: &str = "Plate";
 
 /// A surface (table or counter) near a point: its top centre.
 fn surface_near(objects: &Query<(Entity, &GameObject, &Transform, &UsedBy)>, at: Vec3, within: f32) -> Option<Vec3> {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra80);
     objects
         .iter()
         .filter(|(_, o, tf, _)| within_reach(o, tf, at))
@@ -938,6 +954,7 @@ fn surface_near(objects: &Query<(Entity, &GameObject, &Transform, &UsedBy)>, at:
 /// A free dining chair (a chair with a table in front of it) near the Sim, and the point on the
 /// table where their plate goes.
 fn dining_seat(objects: &Query<(Entity, &GameObject, &Transform, &UsedBy)>, near: Vec3, taken: &[Entity]) -> Option<(Entity, Vec3)> {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra81);
     // (A picnic table's nearest place too: the place itself is taken on the way to it.)
     let picnic = objects.iter().filter(|(e, o, _, _)| o.kind == ObjectKind::PicnicTable && !taken.contains(e)).filter_map(|(e, o, tf, _)| {
         let (plate, seat) = picnic_plate(o, tf, near)?;
@@ -1016,6 +1033,7 @@ fn meal_requests(
     (qualities, floors, mut fire, rates, upgrades): (Query<&MealQuality>, Query<&crate::nav::Floor>, MessageWriter<crate::fire::StartFire>, Res<crate::interact::ObjectRates>, Query<&crate::upgrades::Upgrades>),
     (mut inventories, mut fridge): (Query<&mut crate::inventory::Inventory>, ResMut<crate::ingredients::Fridge>),
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra82);
     use rand::Rng;
     let recipes = ui.as_ref().map(|u| u.data.clone());
     let recipe = |i: usize| recipes.as_ref().and_then(|d| d.recipes.get(i));
@@ -1423,6 +1441,7 @@ pub struct HungerAtMeal(f32);
 /// Eating when not hungry: Stuffed once done (a meal, leftovers, a snack), as the game's
 /// `Morsel` adds it.
 fn stuffed(mut commands: Commands, clock: Res<crate::clock::GameClock>, mut sims: Query<(Entity, &ActionQueue, &crate::sim::Motives, Option<&HungerAtMeal>, &mut crate::life::Moodlets)>) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra83);
     for (e, q, m, at, mut ml) in &mut sims {
         let eats = |a: &Action| a.label == "Eat" || matches!(a.kind, ActionKind::EatHere | ActionKind::EatItem { .. });
         let eating = q.0.front().is_some_and(|a| matches!(a.phase, crate::interact::Phase::Running(_)) && eats(a));
@@ -1478,6 +1497,7 @@ fn queue_cleanup(sim: &Sim, queue: &mut ActionQueue, plate: Entity, roll: f32) {
 
 /// The plate spot for a particular chair (whether or not it's free).
 fn dining_seat_for(objects: &Query<(Entity, &GameObject, &Transform, &UsedBy)>, chair: Entity) -> Option<(Entity, Vec3)> {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra84);
     let (_, o, tf, _) = objects.get(chair).ok()?;
     let seat = o.world_center(tf);
     let ahead = (tf.rotation * Vec3::Z).with_y(0.0).normalize_or(Vec3::Z);
@@ -1506,6 +1526,7 @@ fn dining_table_top(table: &GameObject, tf: &Transform, front: Vec3, chair_base:
 
 /// A Sim who stopped eating early leaves their plate to be cleared.
 fn release_plates(mut commands: Commands, sims: Query<(Entity, &ActionQueue, &EatingPlate), Without<MealRequest>>) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra85);
     for (me, queue, plate) in &sims {
         let eating = queue.0.front().is_some_and(|a| matches!(a.kind, ActionKind::Object { def, .. } if def == CHAIR_EAT));
         if !eating {

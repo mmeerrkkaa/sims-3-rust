@@ -21,8 +21,30 @@ pub struct VisitPlugin;
 
 impl Plugin for VisitPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (arrivals, off_the_lot, close_lot, rebuild_lot_grid, walls_down, guests).chain().run_if(in_state(PlayMode::Live)));
+        app.init_resource::<OpenLots>().add_systems(OnExit(AppState::InGame), clear_open_lots).add_systems(Update, (arrivals.after(crate::save::apply_loaded_game), off_the_lot, close_lot, rebuild_lot_grid, walls_down, guests).chain().run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay));
+        #[cfg(local_validation)]
+        if std::env::var_os("OPEN_LOTS_TEST").is_some() {
+            app.add_systems(Update, crate::open_lots_test::run.after(rebuild_lot_grid).run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay));
+        }
+        #[cfg(local_validation)]
+        if std::env::var_os("OPEN_LOTS_RELOAD_TEST").is_some() {
+            app.add_systems(Update, crate::open_lots_test::verify_restore.after(rebuild_lot_grid).run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay));
+        }
+        #[cfg(local_validation)]
+        if std::env::var_os("NPC_OWNERSHIP_TEST").is_some() {
+            app.init_resource::<crate::npc_ownership_test::Probe>()
+                .add_systems(Update, crate::npc_ownership_test::run.after(guests).in_set(crate::clock::SimPhase::Gameplay).run_if(in_state(PlayMode::Live)));
+        }
     }
+}
+
+/// Detailed lots are owned by simulation occupancy, independently of the camera.
+#[derive(Resource, Default)]
+pub struct OpenLots(pub std::collections::BTreeMap<usize, VisitedLot>);
+
+fn clear_open_lots(mut lots: ResMut<OpenLots>, building: Option<ResMut<ActiveBuilding>>) {
+    lots.0.clear();
+    if let Some(mut b) = building { b.away.clear(); }
 }
 
 /// The drive to or from a community lot (away, like a trip to a rabbit hole).
@@ -38,6 +60,52 @@ pub struct OnLot(pub usize);
 /// Driving to a community lot.
 #[derive(Component)]
 pub struct Trip(pub usize);
+
+#[derive(Component)]
+struct ResumeLotPosition {
+    position: Vec3,
+    yaw: f32,
+    floor: u8,
+}
+
+/// The persistent model contains stable world IDs, not runtime lot indices.
+pub(crate) fn saved_location(world: &WorldInfo, on: Option<&OnLot>, trip: bool, rabbit: Option<&AtRabbitHole>) -> Option<s3sim::residents::WorldLocation> {
+    use s3sim::residents::WorldLocation::*;
+    if let Some(on) = on {
+        return world.lots.get(on.0).map(|l| AtLot { lot: l.id });
+    }
+    let at = rabbit.filter(|at| std::ptr::eq(at.activity, &DRIVE))?;
+    if trip {
+        world.lots.get(at.lot).map(|l| ToLot { lot: l.id, arrive_at: s3sim::tick_at(at.inside_from) })
+    } else {
+        Some(ToHome { arrive_at: s3sim::tick_at(at.until) })
+    }
+}
+
+pub(crate) fn restore_location(ec: &mut bevy::ecs::system::EntityCommands, world: &WorldInfo, saved: &crate::save::SavedSim, now: f64) {
+    use s3sim::residents::WorldLocation::*;
+    let Some(location) = saved.world_location else { return };
+    let (destination, arrival) = match location {
+        AtLot { lot } => (Some(lot), now),
+        ToLot { lot, arrive_at } => (Some(lot), arrive_at as f64 / 10.0),
+        ToHome { arrive_at } => {
+            ec.remove::<(OnLot, Trip, ResumeLotPosition, crate::interact::OffLot)>()
+                .insert((AtRabbitHole { lot: usize::MAX, activity: &DRIVE, inside_from: now, until: arrive_at as f64 / 10.0, place: "home".into() }, Visibility::Hidden));
+            return;
+        }
+    };
+    let Some(lot) = world.lots.iter().position(|l| Some(l.id) == destination) else {
+        warn!("cannot restore {} on missing lot {:?}", saved.first, destination);
+        return;
+    };
+    ec.remove::<(OnLot, crate::interact::OffLot)>().insert((
+        AtRabbitHole { lot, activity: &DRIVE, inside_from: arrival, until: f64::MAX, place: place_name(world, lot) },
+        Trip(lot), Visibility::Hidden,
+    ));
+    if matches!(location, AtLot { .. }) {
+        ec.insert(ResumeLotPosition { position: Vec3::from(saved.position), yaw: saved.yaw, floor: saved.floor });
+    }
+}
 
 /// A townie spending time on the visited lot until `leave_at`.
 #[derive(Component)]
@@ -154,8 +222,7 @@ fn open_lot(commands: &mut Commands, assets: &mut ObjectAssets, ctx: &mut AssetC
     (VisitedLot { lot, grid, upper: Default::default(), exit: lot_exit(l), root, objects, empty_since: None, settle: 3, next_guest: 0.0 }, shown)
 }
 
-/// Sims reaching a community lot: the lot opens (only one at a time; anyone at another heads
-/// home), and they pull up at its front.
+/// Sims reaching a community lot open it without displacing residents of other lots.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn arrivals(
     mut commands: Commands,
@@ -163,43 +230,37 @@ fn arrivals(
     world: Res<CurrentWorld>,
     (data, catalog, mut assets): (Res<Baked>, Res<Catalog>, ResMut<ObjectAssets>),
     (mut meshes, mut images, mut mats): (ResMut<Assets<Mesh>>, ResMut<Assets<Image>>, ResMut<Assets<StandardMaterial>>),
-    visited: Option<Res<VisitedLot>>,
+    mut visited: ResMut<OpenLots>,
     mut building: Option<ResMut<ActiveBuilding>>,
-    mut q: Query<(Entity, &Trip, &AtRabbitHole, &mut Transform, &mut Floor, &Sim, Has<Selected>)>,
-    on_lot: Query<(Entity, &OnLot)>,
+    mut q: Query<(Entity, &Trip, &AtRabbitHole, &mut Transform, &mut Floor, &Sim, Has<Selected>, Option<&ResumeLotPosition>)>,
     mut cam: Query<&mut SimsCamera>,
     mut notes: ResMut<Notifications>,
 ) {
-    let mut open = visited.as_ref().map(|v| v.lot);
     let mut rng = rand::rng();
-    for (e, trip, at, mut tf, mut floor, sim, selected) in &mut q {
+    for (e, trip, at, mut tf, mut floor, sim, selected, resume) in &mut q {
         if clock.minutes < at.inside_from {
             continue;
         }
         let lot = trip.0;
         let Some(l) = world.data.lots.get(lot) else { continue };
-        if open != Some(lot) {
-            if let Some(old) = visited.as_deref().filter(|v| Some(v.lot) == open) {
-                for (o, ol) in &on_lot {
-                    if ol.0 == old.lot {
-                        drive_home(&mut commands, &clock, o, old.lot, place_name(&world.data, old.lot));
-                    }
-                }
-                despawn_lot(&mut commands, old);
-            }
+        if !visited.0.contains_key(&lot) {
             let mut ctx = AssetCtx { baked: &data.0, meshes: &mut meshes, images: &mut images, materials: &mut mats };
             let (v, shown) = open_lot(&mut commands, &mut assets, &mut ctx, &catalog, &world.data, lot);
             if let Some(b) = building.as_deref_mut() {
-                b.away = shown.map(Box::new);
+                if let Some(shown) = shown { b.away.insert(lot, shown); }
             }
-            commands.insert_resource(v);
-            open = Some(lot);
+            visited.0.insert(lot, v);
         }
         let p = lot_exit(l) + Vec2::new(rng.random_range(-1.5..1.5), rng.random_range(-1.0..1.0));
         let y = crate::building::walk_height(&world.data, building.as_deref(), Vec3::new(p.x, 0.0, p.y));
         tf.translation = Vec3::new(p.x, y, p.y);
         floor.0 = 1;
-        commands.entity(e).remove::<(AtRabbitHole, Trip)>().insert((OnLot(lot), Visibility::Inherited));
+        if let Some(resume) = resume {
+            tf.translation = resume.position;
+            tf.rotation = Quat::from_rotation_y(resume.yaw);
+            floor.0 = resume.floor;
+        }
+        commands.entity(e).remove::<(AtRabbitHole, Trip, ResumeLotPosition, crate::interact::OffLot)>().insert((OnLot(lot), Visibility::Inherited));
         if selected && let Ok(mut c) = cam.single_mut() {
             c.look_at(tf.translation);
             c.distance = c.distance.min(30.0);
@@ -220,7 +281,6 @@ fn despawn_lot(commands: &mut Commands, v: &VisitedLot) {
     for &e in &v.objects {
         commands.entity(e).try_despawn();
     }
-    commands.remove_resource::<VisitedLot>();
 }
 
 /// Sims who leave a community lot for work or a rabbit hole are no longer on it.
@@ -234,24 +294,28 @@ fn off_the_lot(mut commands: Commands, q: Query<Entity, (With<OnLot>, Or<(With<c
 fn close_lot(
     mut commands: Commands,
     clock: Res<GameClock>,
-    visited: Option<ResMut<VisitedLot>>,
+    mut visited: ResMut<OpenLots>,
     mut building: Option<ResMut<ActiveBuilding>>,
     on_lot: Query<&OnLot, With<crate::sim::HouseholdMember>>,
     trips: Query<&Trip>,
 ) {
-    let Some(mut v) = visited else { return };
+    let mut closed = Vec::new();
+    for v in visited.0.values_mut() {
     let busy = on_lot.iter().any(|o| o.0 == v.lot) || trips.iter().any(|t| t.0 == v.lot);
     if busy {
         v.empty_since = None;
-        return;
+        continue;
     }
     let since = *v.empty_since.get_or_insert(clock.minutes);
     if clock.minutes - since > LINGER_MINUTES {
         despawn_lot(&mut commands, &v);
         if let Some(b) = building.as_deref_mut() {
-            b.away = None;
+            b.away.remove(&v.lot);
         }
+        closed.push(v.lot);
     }
+    }
+    for lot in closed { visited.0.remove(&lot); }
 }
 
 /// Townies out on the town: while a community lot is open in the daytime a few turn up (from
@@ -263,44 +327,44 @@ fn guests(
     clock: Res<GameClock>,
     world: Res<CurrentWorld>,
     building: Option<Res<ActiveBuilding>>,
-    visited: Option<ResMut<VisitedLot>>,
-    mut townies: Query<(Entity, &mut Transform, &mut Floor, &crate::town::Townie), Without<LotGuest>>,
-    mut out: Query<(Entity, &LotGuest, &OnLot, &mut crate::interact::ActionQueue), Without<crate::town::Townie>>,
+    mut visited: ResMut<OpenLots>,
+    mut townies: Query<(Entity, &mut Transform, &mut Floor, &crate::town::Townie), (Without<LotGuest>, Without<crate::interact::Invited>, Without<crate::interact::Visitor>, Without<crate::sim::HouseholdMember>)>,
+    out: Query<(Entity, &LotGuest, &OnLot), Without<crate::town::Townie>>,
 ) {
     let mut rng = rand::rng();
     // Time to go (or the lot closed): back to strolling.
-    let mut here = 0;
-    for (e, g, on, mut q) in &mut out {
-        if visited.as_ref().is_some_and(|v| v.lot == on.0) && clock.minutes < g.leave_at {
-            here += 1;
+    let mut here = std::collections::HashMap::<usize, usize>::new();
+    for (e, g, on) in &out {
+        if visited.0.contains_key(&on.0) && clock.minutes < g.leave_at {
+            *here.entry(on.0).or_default() += 1;
             continue;
         }
-        q.0.clear();
-        commands
-            .entity(e)
-            .remove::<(LotGuest, OnLot, crate::nav::PathFollow)>()
-            .insert((crate::town::Townie { next_walk: clock.minutes + rng.random_range(30.0..120.0), walking: false }, Visibility::Hidden));
+        // Claims are released by the transition before the queue is dropped.
+        crate::town::retire_to_background(&mut commands, e, clock.minutes + rng.random_range(30.0..120.0));
     }
-    let Some(mut v) = visited else { return };
     let hour = clock.hour_f();
-    if here >= GUESTS || !GUEST_HOURS.contains(&hour) || clock.minutes < v.next_guest || v.grid.dirty {
-        return;
+    let mut assigned = std::collections::HashSet::new();
+    for v in visited.0.values_mut() {
+    if here.get(&v.lot).copied().unwrap_or(0) >= GUESTS || !GUEST_HOURS.contains(&hour) || clock.minutes < v.next_guest || v.grid.dirty {
+        continue;
     }
     v.next_guest = clock.minutes + rng.random_range(10.0..45.0);
-    let free: Vec<Entity> = townies.iter().filter(|t| !t.3.walking).map(|t| t.0).collect();
+    let free: Vec<Entity> = townies.iter().filter(|t| !t.3.walking && !assigned.contains(&t.0)).map(|t| t.0).collect();
     if free.is_empty() {
-        return;
+        continue;
     }
     let pick = free[rng.random_range(0..free.len())];
-    let Ok((e, mut tf, mut floor, _)) = townies.get_mut(pick) else { return };
+    assigned.insert(pick);
+    let Ok((e, mut tf, mut floor, _)) = townies.get_mut(pick) else { continue };
     let p = v.exit + Vec2::new(rng.random_range(-2.0..2.0), rng.random_range(-1.0..1.0));
     tf.translation = Vec3::new(p.x, crate::building::walk_height(&world.data, building.as_deref(), Vec3::new(p.x, 0.0, p.y)), p.y);
     floor.0 = 1;
     commands
         .entity(e)
-        .remove::<(crate::town::Townie, crate::nav::PathFollow)>()
+        .remove::<(crate::town::Townie, crate::nav::PathFollow, crate::interact::OffLot)>()
         .insert((LotGuest { leave_at: clock.minutes + rng.random_range(90.0..240.0) }, OnLot(v.lot), Visibility::Inherited))
         .insert_if_new((crate::interact::ActionQueue::default(), crate::interact::AutonomyTimer(rng.random_range(0.5..3.0)), crate::interact::Skills::default()));
+    }
 }
 
 /// Up close, the visited lot's walls are shown cut down so Sims inside can be seen.
@@ -315,23 +379,23 @@ fn walls_down(cams: Query<&SimsCamera>, mut walls: Query<(&crate::building::Visi
 /// The lot's walk grid, once its furniture has settled in place.
 fn rebuild_lot_grid(
     world: Res<CurrentWorld>,
-    visited: Option<ResMut<VisitedLot>>,
+    mut visited: ResMut<OpenLots>,
     obstacles: crate::nav::Obstacles,
     building: Option<Res<ActiveBuilding>>,
     spirals: Res<crate::nav::SpiralLinks>,
 ) {
-    let Some(mut v) = visited else { return };
+    for v in visited.0.values_mut() {
     if v.settle > 0 {
         v.settle -= 1;
-        return;
+        continue;
     }
     if v.grid.dirty {
         v.grid.dirty = false;
-        crate::nav::fill_grid(&mut v.grid, &world.data, &obstacles, building.as_deref().and_then(|b| b.away.as_deref()));
+        crate::nav::fill_grid(&mut v.grid, &world.data, &obstacles, building.as_deref().and_then(|b| b.away.get(&v.lot)));
         // (A lot without upper floors has none to wait for.)
         v.upper.made = true;
         // (And its upper floors, from the building shown for it.)
-        if let Some(a) = building.as_deref().and_then(|b| b.away.as_deref()) {
+        if let Some(a) = building.as_deref().and_then(|b| b.away.get(&v.lot)) {
             crate::nav::rebuild_upper(a, &mut v.upper, &obstacles, &spirals);
             debug!(
                 "visit {}: upper floors {:?}, links {:?}",
@@ -340,5 +404,6 @@ fn rebuild_lot_grid(
                 v.upper.stairs.iter().map(|s| (s.level, s.upper, s.bottom, s.top, s.y0, s.y1)).collect::<Vec<_>>()
             );
         }
+    }
     }
 }

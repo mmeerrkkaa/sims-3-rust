@@ -155,6 +155,7 @@ fn simology_panel(
     settings: Res<crate::options::Settings>,
     mut journal: ResMut<crate::celebrity::Journal>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Simology);
     let s: &Spawned = &hud.simology;
     let (Some(mut ui), Ok((e, sim, aging, famous))) = (ui, sel.single()) else { return };
     // (A celebrity's journal: the game's dialog, `celebrity`.)
@@ -336,6 +337,7 @@ fn career_panel(
     panel: Res<InfoPanel>,
     (people, mut fonts): (Query<(Entity, &Sim)>, ResMut<Assets<Font>>),
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::CareerPanel);
     let s: &Spawned = &hud.career;
     let (Some(mut ui), Ok((e, sim, job, at_work, grades, homework, (mood, skills, rels), (at_school, went)))) = (ui, sel.single()) else { return };
     if *panel != InfoPanel::Career {
@@ -573,6 +575,7 @@ fn inventory_panel(
     mut state: Local<(Option<Entity>, String, f32)>,
     panel: Res<InfoPanel>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::InventoryPanel);
     let s: &Spawned = &hud.inventory;
     let (Some(mut ui), Ok((me, sim, inv))) = (ui, sel.single()) else { return };
     if pressed(&clicks, s.id(INV_PHONE)) {

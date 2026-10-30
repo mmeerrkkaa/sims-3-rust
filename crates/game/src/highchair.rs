@@ -16,7 +16,7 @@ pub struct HighChairPlugin;
 
 impl Plugin for HighChairPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, high_chairs.before(crate::interact::run_actions).run_if(in_state(PlayMode::Live)));
+        app.add_systems(crate::clock::SimTick, high_chairs.before(crate::interact::run_actions).run_if(in_state(PlayMode::Live)));
     }
 }
 

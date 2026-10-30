@@ -18,7 +18,7 @@ pub struct JogPlugin;
 
 impl Plugin for JogPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (jog, jog_here).run_if(in_state(PlayMode::Live)));
+        app.add_systems(Update, (jog, jog_here).run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay));
     }
 }
 

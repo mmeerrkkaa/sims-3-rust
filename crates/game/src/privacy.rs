@@ -55,6 +55,7 @@ fn private_rooms(
     sims: Query<(Entity, &ActionQueue), Without<crate::visit::OnLot>>,
     objects: Query<(Entity, &GameObject, &Transform), Without<crate::visit::LotObject>>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::PrivateRooms);
     privacy.objects.clear();
     let Some(b) = building else { return };
     let room = |p: Vec3| {
@@ -93,6 +94,7 @@ fn waiting(
     ui: Option<Res<crate::icons::GameUi>>,
     mut sims: Query<(Entity, &crate::sim::Sim, &mut WaitingForPrivacy, &mut ActionQueue)>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::PrivacyWaiting);
     for (e, sim, mut w, mut queue) in &mut sims {
         let blocked = queue.0.front().is_some_and(|a| a.phase == Phase::Start && matches!(a.kind, ActionKind::Object { target, .. } if privacy.objects.get(&target).is_some_and(|u| *u != e)));
         if !blocked {

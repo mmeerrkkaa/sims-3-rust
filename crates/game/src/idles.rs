@@ -13,14 +13,14 @@ use s3bake::gamedata::IdleAnim;
 
 use crate::PlayMode;
 use crate::anim::{ActionClip, ClipLibrary};
-use crate::clock::{GameClock, SPEED_RATES};
+use crate::clock::GameClock;
 use crate::sim::{Age, Pose, Sim, SimAnim};
 
 pub struct IdlesPlugin;
 
 impl Plugin for IdlesPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, idle.run_if(in_state(PlayMode::Live)));
+        app.add_systems(Update, idle.run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay));
     }
 }
 
@@ -98,8 +98,8 @@ fn group_of<'a>(all: &'a [(String, Vec<IdleAnim>)], key: &str, fits: &dyn Fn(&&I
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn idle(
+    delta: Res<crate::clock::SimDelta>,
     mut commands: Commands,
-    time: Res<Time>,
     clock: Res<GameClock>,
     ui: Option<Res<crate::icons::GameUi>>,
     data: Res<crate::baked::Baked>,
@@ -124,7 +124,7 @@ fn idle(
     let Some(ui) = ui else { return };
     let tables = &ui.data.idles;
     let known = known.get_or_insert_with(|| data.0.clip_names.iter().map(|n| n.to_ascii_lowercase()).collect());
-    let dt = time.delta_secs().min(0.1) * SPEED_RATES[clock.speed];
+    let dt = delta.0;
     let mut rng = rand::rng();
     for (e, sim, queue, anim, idling, next, clip, path, (shown, mood, moodlets)) in &mut sims {
         let walking = path.is_some_and(|p| !p.done);

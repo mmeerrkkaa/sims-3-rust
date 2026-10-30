@@ -86,6 +86,7 @@ impl GameUi {
 }
 
 fn open_game_ui(mut commands: Commands, existing: Option<Res<GameUi>>, mut tried: Local<f32>, time: Res<Time>) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra29);
     if existing.is_some() || time.elapsed_secs() < *tried {
         return;
     }
@@ -120,6 +121,7 @@ fn tooltips(
     windows: Query<&Window, With<PrimaryWindow>>,
     mut shown: Local<Option<String>>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra30);
     let cursor = windows.single().ok().filter(|w| w.focused).and_then(|w| w.cursor_position().map(|c| (c, w.width(), w.height())));
     let want = cursor.and_then(|_| hovered.iter()
         .find(|(i, _, visible, layout)| **i == Interaction::Hovered && visible.is_none_or(|v| v.get())

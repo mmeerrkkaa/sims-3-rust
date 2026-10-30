@@ -30,6 +30,9 @@ impl Plugin for StoryPlugin {
 /// How the town's Sims have moved on since the world began.
 #[derive(Resource, Clone, Default, Debug, Serialize, Deserialize)]
 pub struct TownStory {
+    /// Persistent decisions keyed by resident ID, independent of ECS entity lifetimes.
+    #[serde(default)]
+    pub conversations: s3sim::ConversationPlans,
     /// The last day the town moved on (0: not yet started).
     pub day: u32,
     /// What has changed for each of the world's Sims, by id.

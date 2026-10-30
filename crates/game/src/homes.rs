@@ -14,7 +14,7 @@ use crate::clock::GameClock;
 use crate::interact::{Action, ActionKind, ActionQueue, AutonomyTimer, GoingHome, Notifications, OffLot, Skills, Visitor};
 use crate::sim::{Age, HouseholdMember, Sim};
 use crate::social::{RelStatus, Relationships};
-use crate::visit::{OnLot, VisitedLot};
+use crate::visit::{OnLot, OpenLots};
 
 pub struct HomesPlugin;
 
@@ -42,6 +42,7 @@ fn family_homes(
     world: Option<Res<crate::loading::CurrentWorld>>,
     (town, story, dormant, household): (Option<Res<crate::premade::TownPremades>>, Res<crate::story::TownStory>, Res<crate::household::Dormant>, Option<Res<crate::interact::Household>>),
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra54);
     if time.elapsed_secs() - *last < 5.0 && !homes.0.is_empty() {
         return;
     }
@@ -118,7 +119,7 @@ fn status_of(state: &str) -> (RelStatus, bool) {
 fn residents_home(
     mut commands: Commands,
     clock: Res<GameClock>,
-    visited: Option<Res<VisitedLot>>,
+    visited: Res<OpenLots>,
     world: Res<crate::loading::CurrentWorld>,
     (town, story, dormant, household): (Option<Res<crate::premade::TownPremades>>, Res<crate::story::TownStory>, Res<crate::household::Dormant>, Option<Res<crate::interact::Household>>),
     (data, cas, sim_assets): (Res<crate::baked::Baked>, Option<Res<crate::simbody::CasData>>, Res<crate::sim::SimAssets>),
@@ -130,104 +131,102 @@ fn residents_home(
     ),
     mut sims: Query<(Entity, &Sim, &mut Transform, &mut crate::nav::Floor, &mut Relationships, Has<HouseholdMember>)>,
     mut notes: ResMut<Notifications>,
-    mut done: Local<Option<usize>>,
+    mut done: Local<std::collections::HashSet<usize>>,
     building: Option<Res<crate::building::ActiveBuilding>>,
 ) {
-    let Some(v) = visited else {
-        *done = None;
-        return;
-    };
-    if *done == Some(v.lot) {
-        return;
-    }
-    // (Once the lot's walk grid is ready: they're set down where it's free to stand.)
-    if !v.grid.ready() {
-        return;
-    }
-    *done = Some(v.lot);
-    let Some(l) = world.data.lots.get(v.lot) else { return };
-    if !l.is_residential() {
-        return;
-    }
-    let Some(family) = family_at(&world, town.as_deref(), &story, &dormant, household.as_ref().map(|h| h.lot_index), v.lot) else { return };
-    let home: Vec<&s3formats::premade::PremadeSim> = family.members.iter().filter(|p| home_now(p, &clock)).collect();
-    name_home(v.lot, &family.name);
-    let name = crate::visit::place_name(&world.data, v.lot);
-    if home.is_empty() {
-        notes.push(format!("Nobody from the {} household is home right now.", family.name));
-        return;
-    }
-    let center = crate::home::lot_center(l);
-    let mut rng = rand::rng();
-    let mut placed: Vec<(Entity, u64)> = Vec::new();
-    for (k, p) in home.iter().enumerate() {
-        // (Somewhere free inside, about the middle of the house.)
-        let mut at = center.xz();
-        for _ in 0..40 {
-            let c = center.xz() + Vec2::new(rng.random_range(-6.0..6.0), rng.random_range(-6.0..6.0));
-            if crate::puddles::free_at(Some(&v.grid), None, 1, c) {
-                at = c;
-                break;
-            }
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra55);
+    done.retain(|lot| visited.0.contains_key(lot));
+    for v in visited.0.values() {
+        if done.contains(&v.lot) { continue; }
+        // (Once the lot's walk grid is ready: they're set down where it's free to stand.)
+        if !v.grid.ready() {
+            continue;
         }
-        let house = building.as_deref().and_then(|b| b.away.as_deref());
-        let pos = Vec3::new(at.x, crate::building::walk_height(&world.data, house, Vec3::new(at.x, 0.0, at.y)), at.y);
-        let existing = sims.iter().find(|s| s.1.id == p.id).map(|s| (s.0, s.5));
-        let e = match existing {
-            Some((_, true)) => continue,
-            Some((e, false)) => {
-                if let Ok((_, _, mut tf, mut floor, ..)) = sims.get_mut(e) {
-                    tf.translation = pos;
-                    floor.0 = 1;
+        done.insert(v.lot);
+        let Some(l) = world.data.lots.get(v.lot) else { continue };
+        if !l.is_residential() {
+            continue;
+        }
+        let Some(family) = family_at(&world, town.as_deref(), &story, &dormant, household.as_ref().map(|h| h.lot_index), v.lot) else { continue };
+        let home: Vec<&s3formats::premade::PremadeSim> = family.members.iter().filter(|p| home_now(p, &clock)).collect();
+        name_home(v.lot, &family.name);
+        let name = crate::visit::place_name(&world.data, v.lot);
+        if home.is_empty() {
+            notes.push(format!("Nobody from the {} household is home right now.", family.name));
+            continue;
+        }
+        let center = crate::home::lot_center(l);
+        let mut rng = rand::rng();
+        let mut placed: Vec<(Entity, u64)> = Vec::new();
+        for (k, p) in home.iter().enumerate() {
+            // (Somewhere free inside, about the middle of the house.)
+            let mut at = center.xz();
+            for _ in 0..40 {
+                let c = center.xz() + Vec2::new(rng.random_range(-6.0..6.0), rng.random_range(-6.0..6.0));
+                if crate::puddles::free_at(Some(&v.grid), None, 1, c) {
+                    at = c;
+                    break;
                 }
-                commands.entity(e).remove::<(crate::town::Townie, crate::nav::PathFollow, OffLot, Visitor, crate::visit::LotGuest, GoingHome)>();
-                e
             }
-            None => {
-                let sim = crate::premade::to_sim(p);
-                let model = cas.as_ref().and_then(|cas| {
-                    let outfit = crate::simbody::pick_outfit(cas, &sim, &mut <rand::rngs::StdRng as rand::SeedableRng>::seed_from_u64(sim.look));
-                    crate::simbody::build_sim_model(&data.0, cas, &sim, &outfit, crate::simbody::tone_of(&sim))
-                });
-                let mut sctx = crate::sim::SimSpawnCtx {
-                    assets: &sim_assets,
-                    render: crate::simbody::SimRenderCtx {
-                        meshes: &mut meshes,
-                        images: &mut images,
-                        mats: &mut mats,
-                        skin_mats: &mut skin_mats,
-                        bindposes: &mut bindposes,
-                        textures: &mut textures,
-                    },
-                };
-                crate::sim::spawn_sim_full(&mut commands, &mut sctx, sim, pos, model)
-            }
-        };
-        commands
-            .entity(e)
-            .insert((Resident(v.lot), OnLot(v.lot), Visibility::Inherited, DespawnOnExit(crate::AppState::InGame)))
-            .insert_if_new((ActionQueue::default(), AutonomyTimer(1.0 + k as f32), Skills::default()));
-        placed.push((e, p.id));
-    }
-    // (Family and friends among themselves, as the town has them.)
-    if let Some(t) = town.as_deref() {
-        for &(a, ia) in &placed {
-            for &(b, ib) in &placed {
-                if a == b {
-                    continue;
+            let house = building.as_deref().and_then(|b| b.away.get(&v.lot));
+            let pos = Vec3::new(at.x, crate::building::walk_height(&world.data, house, Vec3::new(at.x, 0.0, at.y)), at.y);
+            let existing = sims.iter().find(|s| s.1.id == p.id).map(|s| (s.0, s.5));
+            let e = match existing {
+                Some((_, true)) => continue,
+                Some((e, false)) => {
+                    if let Ok((_, _, mut tf, mut floor, ..)) = sims.get_mut(e) {
+                        tf.translation = pos;
+                        floor.0 = 1;
+                    }
+                    commands.entity(e).remove::<(crate::town::Townie, crate::nav::PathFollow, OffLot, Visitor, crate::visit::LotGuest, GoingHome)>();
+                    e
                 }
-                let Some(r) = t.relationship(ia, ib) else { continue };
-                let (status, romantic) = status_of(&r.state);
-                if let Ok((.., mut rels, _)) = sims.get_mut(a)
-                    && !rels.0.contains_key(&b)
-                {
-                    let x = rels.entry(b);
-                    (x.friendship, x.status, x.romantic) = (r.liking, status, romantic);
+                None => {
+                    let sim = crate::premade::to_sim(p);
+                    let model = cas.as_ref().and_then(|cas| {
+                        let outfit = crate::simbody::pick_outfit(cas, &sim, &mut <rand::rngs::StdRng as rand::SeedableRng>::seed_from_u64(sim.look));
+                        crate::simbody::build_sim_model(&data.0, cas, &sim, &outfit, crate::simbody::tone_of(&sim))
+                    });
+                    let mut sctx = crate::sim::SimSpawnCtx {
+                        assets: &sim_assets,
+                        render: crate::simbody::SimRenderCtx {
+                            meshes: &mut meshes,
+                            images: &mut images,
+                            mats: &mut mats,
+                            skin_mats: &mut skin_mats,
+                            bindposes: &mut bindposes,
+                            textures: &mut textures,
+                        },
+                    };
+                    crate::sim::spawn_sim_full(&mut commands, &mut sctx, sim, pos, model)
+                }
+            };
+            commands
+                .entity(e)
+                .insert((Resident(v.lot), OnLot(v.lot), Visibility::Inherited, DespawnOnExit(crate::AppState::InGame)))
+                .insert_if_new((ActionQueue::default(), AutonomyTimer(1.0 + k as f32), Skills::default()));
+            placed.push((e, p.id));
+        }
+        // (Family and friends among themselves, as the town has them.)
+        if let Some(t) = town.as_deref() {
+            for &(a, ia) in &placed {
+                for &(b, ib) in &placed {
+                    if a == b {
+                        continue;
+                    }
+                    let Some(r) = t.relationship(ia, ib) else { continue };
+                    let (status, romantic) = status_of(&r.state);
+                    if let Ok((.., mut rels, _)) = sims.get_mut(a)
+                        && !rels.0.contains_key(&b)
+                    {
+                        let x = rels.entry(b);
+                        (x.friendship, x.status, x.romantic) = (r.liking, status, romantic);
+                    }
                 }
             }
         }
+        info!("homes: {} of the {} household at home at {name}", placed.len(), family.name);
     }
-    info!("homes: {} of the {} household at home at {name}", placed.len(), family.name);
 }
 
 /// The household's Sims at someone's home go to the front door and ring, once (each time they
@@ -235,27 +234,27 @@ fn residents_home(
 #[allow(clippy::type_complexity)]
 fn ring_the_bell(
     mut commands: Commands,
-    visited: Option<Res<VisitedLot>>,
+    visited: Res<OpenLots>,
     building: Option<Res<crate::building::ActiveBuilding>>,
     world: Res<crate::loading::CurrentWorld>,
     mut visitors: Query<(Entity, &OnLot, &mut ActionQueue), With<HouseholdMember>>,
     residents: Query<&Resident>,
     mut rung: Local<std::collections::HashSet<(Entity, usize)>>,
 ) {
-    let Some(v) = visited else {
-        rung.clear();
-        return;
-    };
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra56);
+
     // (Gone from the lot: ringing again when they come back.)
     rung.retain(|(e, lot)| visitors.get(*e).is_ok_and(|q| q.1.0 == *lot));
-    if !world.data.lots.get(v.lot).is_some_and(|l| l.is_residential()) || !residents.iter().any(|r| r.0 == v.lot) {
-        return;
-    }
-    let Some((door, door_e)) = building.as_ref().and_then(|b| b.away.as_ref()).and_then(|b| b.front_door(v.exit)) else { return };
-    let back = building.as_ref().and_then(|b| b.away.as_ref()).and_then(|b| b.front_door_out(v.exit, crate::doorbell::STAND_BACK));
-    for (e, on, mut queue) in &mut visitors {
-        if on.0 == v.lot && rung.insert((e, v.lot)) {
-            crate::doorbell::come_to_door(&mut commands, e, &mut queue, door, back, door_e.unwrap_or(e));
+    for v in visited.0.values() {
+        if !world.data.lots.get(v.lot).is_some_and(|l| l.is_residential()) || !residents.iter().any(|r| r.0 == v.lot) {
+            continue;
+        }
+        let Some((door, door_e)) = building.as_ref().and_then(|b| b.away.get(&v.lot)).and_then(|b| b.front_door(v.exit)) else { continue };
+        let back = building.as_ref().and_then(|b| b.away.get(&v.lot)).and_then(|b| b.front_door_out(v.exit, crate::doorbell::STAND_BACK));
+        for (e, on, mut queue) in &mut visitors {
+            if on.0 == v.lot && rung.insert((e, v.lot)) {
+                crate::doorbell::come_to_door(&mut commands, e, &mut queue, door, back, door_e.unwrap_or(e));
+            }
         }
     }
 }
@@ -285,11 +284,12 @@ fn asked_to_leave(
     mut commands: Commands,
     clock: Res<GameClock>,
     mut last: Local<f64>,
-    visited: Option<Res<VisitedLot>>,
+    visited: Res<OpenLots>,
     mut hosts: Query<(&Resident, &mut ActionQueue, &Sim), Without<HouseholdMember>>,
     guests: Query<(Entity, &OnLot), (With<HouseholdMember>, Without<crate::doorbell::AtTheDoor>)>,
     going: Query<Entity, (With<HouseholdMember>, With<OnLot>, Added<GoingHome>)>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra57);
     // (Asked to leave: home they go, from where they are.)
     for e in &going {
         commands.entity(e).remove::<GoingHome>();
@@ -300,7 +300,6 @@ fn asked_to_leave(
             }
         });
     }
-    let Some(v) = visited else { return };
     if clock.minutes - *last < ASK_EVERY {
         return;
     }
@@ -311,18 +310,21 @@ fn asked_to_leave(
     }
     // (The game's "Ask to Leave": ours, "Say Goodbye".)
     let Some(ask) = crate::social::all_socials().find(|(_, s)| s.effect == crate::social::SocialEffect::AskToLeave).map(|(i, _)| i) else { return };
-    let visitor = guests.iter().find(|g| g.1.0 == v.lot).map(|g| g.0);
-    let Some(visitor) = visitor else { return };
-    if let Some((_, mut q, _)) = hosts.iter_mut().find(|h| h.0.0 == v.lot && h.2.age.is_grown() && h.2.age != Age::Child && h.1.0.iter().all(|a| a.autonomous)) {
-        q.0.clear();
-        q.0.push_back(Action::new("Ask to Leave", ActionKind::Social { target: visitor, social: ask }, true));
+    for v in visited.0.values() {
+        let visitor = guests.iter().find(|g| g.1.0 == v.lot).map(|g| g.0);
+        let Some(visitor) = visitor else { continue };
+        if let Some((_, mut q, _)) = hosts.iter_mut().find(|h| h.0.0 == v.lot && h.2.age.is_grown() && h.2.age != Age::Child && h.1.0.iter().all(|a| a.autonomous)) {
+            q.0.clear();
+            q.0.push_back(Action::new("Ask to Leave", ActionKind::Social { target: visitor, social: ask }, true));
+        }
     }
 }
 
 /// The visit over (the lot closed): the family carry on off stage, kept as acquaintances.
-fn residents_away(mut commands: Commands, visited: Option<Res<VisitedLot>>, residents: Query<(Entity, &Resident)>) {
+fn residents_away(mut commands: Commands, visited: Res<OpenLots>, residents: Query<(Entity, &Resident)>) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra58);
     for (e, r) in &residents {
-        if visited.as_ref().is_some_and(|v| v.lot == r.0) {
+        if visited.0.contains_key(&r.0) {
             continue;
         }
         commands.entity(e).remove::<(Resident, OnLot, crate::nav::PathFollow, crate::doorbell::AtTheDoor)>().insert((OffLot, Visibility::Hidden));
@@ -346,6 +348,7 @@ fn home_visit_test(
     residents: Query<(&Sim, &ActionQueue), (With<Resident>, Without<crate::sim::Selected>)>,
     mut state: Local<(Option<f32>, bool, f32)>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra59);
     let now = time.elapsed_secs();
     let t0 = *state.0.get_or_insert(now);
     let Ok((mut q, tf, on, at_door)) = sel.single_mut() else { return };

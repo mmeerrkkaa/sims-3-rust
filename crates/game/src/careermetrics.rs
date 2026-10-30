@@ -74,7 +74,7 @@ pub struct CareerMetricsPlugin;
 
 impl Plugin for CareerMetricsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (gig_test, gigs_done, game_days, write_on, report_test, reviews_seen).run_if(in_state(PlayMode::Live)));
+        app.add_systems(Update, (gig_test, gigs_done, game_days, write_on, report_test, reviews_seen).run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay));
     }
 }
 

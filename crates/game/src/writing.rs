@@ -21,7 +21,7 @@ pub struct WritingPlugin;
 
 impl Plugin for WritingPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (write_pages, pay_royalties).run_if(in_state(PlayMode::Live)));
+        app.add_systems(Update, (write_pages, pay_royalties).run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay));
     }
 }
 
@@ -135,7 +135,7 @@ mod tests {
             app.init_resource::<GameClock>().init_resource::<Notifications>()
                 .add_message::<crate::journal::Did>()
                 .insert_resource(Household { name: "Author".into(), funds: 0, lot_index: 0, last_bill_day: 0, bills: vec![] })
-                .add_systems(Update, pay_royalties);
+                .add_systems(Update, pay_royalties.in_set(crate::clock::SimPhase::Gameplay));
             app.world_mut().resource_mut::<GameClock>().minutes = 6.0 * 1440.0 + 720.0;
             let e = app.world_mut().spawn((
                 crate::sim::random_sim(&mut rand::rng(), "Author", Some(true), Age::Adult),
@@ -185,7 +185,7 @@ mod tests {
     fn royalty_payments_keep_sunday_schedule_across_reload_and_missed_weeks() {
         let mut app = App::new();
         app.init_resource::<GameClock>().init_resource::<Notifications>()
-            .add_message::<crate::journal::Did>().add_systems(Update, pay_royalties);
+            .add_message::<crate::journal::Did>().add_systems(Update, pay_royalties.in_set(crate::clock::SimPhase::Gameplay));
         let author = Author { draft: None, books: vec![Book {
             title: "Sunday Book".into(), genre: "Fiction".into(), quality: Quality::Success,
             royalty: 100, payments_left: 6, next_pay: 0, // Legacy weekday is normalized.
@@ -244,7 +244,7 @@ mod tests {
             .insert_resource(SimDelta(180.0))
             .insert_resource(Household { name: "Authors".into(), funds: 0, lot_index: 0, last_bill_day: 0, bills: vec![] })
             .add_message::<crate::dreams::DreamEvent>()
-            .add_systems(Update, write_pages);
+            .add_systems(Update, write_pages.in_set(crate::clock::SimPhase::Gameplay));
         let computer = app.world_mut().spawn(GameObject {
             kind: ObjectKind::Computer, name: "Computer".into(), objd: (0, 0, 0), price: 0,
             center: Vec2::ZERO, half: Vec2::ONE, height: 1.0, route: None,

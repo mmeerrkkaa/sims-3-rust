@@ -20,7 +20,7 @@ impl Plugin for EffectsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<WaterLooks>()
             .add_message::<SpinSparkle>()
-            .add_systems(Update, (attach, fountain_water, bubble_baths, sprinkler_spray, emit, fall, tv_screens, censor, sparkle, stink).chain().run_if(in_state(PlayMode::Live)));
+            .add_systems(Update, (attach, fountain_water, bubble_baths, sprinkler_spray, emit, fall, tv_screens, censor, sparkle, stink).chain().run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay));
     }
 }
 
@@ -575,10 +575,9 @@ fn star_image() -> Image {
 /// Swirls of sparkles round Sims changing their clothes, spiralling up them and fading.
 #[allow(clippy::too_many_arguments)]
 fn sparkle(
+    delta: Res<crate::clock::SimDelta>,
     mut commands: Commands,
     mut asked: MessageReader<SpinSparkle>,
-    time: Res<Time>,
-    clock: Res<crate::clock::GameClock>,
     (mut meshes, mut mats, mut images): (ResMut<Assets<Mesh>>, ResMut<Assets<StandardMaterial>>, ResMut<Assets<Image>>),
     mut looks: Local<Option<(Handle<Mesh>, Handle<StandardMaterial>)>>,
     cams: Query<&GlobalTransform, With<SimsCamera>>,
@@ -629,7 +628,7 @@ fn sparkle(
         }
     }
     // (In step with the spin: at the game's speed.)
-    let dt = time.delta_secs().min(0.1) * crate::clock::SPEED_RATES[clock.speed];
+    let dt = delta.0;
     let cam = cams.single().ok().map(|c| c.translation());
     for (e, mut s, mut tf, m) in &mut q {
         s.age += dt;
@@ -700,9 +699,8 @@ fn wisp_image() -> Image {
 /// Stink rising off smelly Sims, while they're smelly and to be seen (not in the water).
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn stink(
+    delta: Res<crate::clock::SimDelta>,
     mut commands: Commands,
-    time: Res<Time>,
-    clock: Res<crate::clock::GameClock>,
     (mut meshes, mut mats, mut images): (ResMut<Assets<Mesh>>, ResMut<Assets<StandardMaterial>>, ResMut<Assets<Image>>),
     mut looks: Local<Option<(Handle<Mesh>, StandardMaterial)>>,
     mut due: Local<HashMap<Entity, f32>>,
@@ -710,7 +708,7 @@ fn stink(
     sims: Query<(Entity, &crate::sim::Sim, &GlobalTransform, &crate::life::Moodlets, &InheritedVisibility, Has<crate::swim::Swimming>)>,
     mut q: Query<(Entity, &mut Wisp, &mut Transform, &MeshMaterial3d<StandardMaterial>)>,
 ) {
-    let dt = time.delta_secs().min(0.1) * crate::clock::SPEED_RATES[clock.speed];
+    let dt = delta.0;
     let mut rng = rand::rng();
     let (quad, look) = looks
         .get_or_insert_with(|| {

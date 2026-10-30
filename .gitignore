@@ -5,3 +5,30 @@
 /saves
 settings.json
 collections.json
+/measurements/
+/scripts/__pycache__/
+
+# Local agent context
+/.agents/
+/.claude/
+**/AGENTS.md
+**/MEMORY.md
+
+# Local validation scenarios and reports (built-in Rust checks remain in source)
+/scripts/
+/crates/game/src/open_lots_test.rs
+/crates/game/src/npc_ownership_test.rs
+/docs/conversation-profile.md
+/docs/cpu-profile-*.md
+/docs/first-run-performance.md
+/docs/initial-audit.md
+/docs/performance.md
+/docs/town-simulation-audit.md
+/docs/simulation-architecture.md
+*.profraw
+*.profdata
+
+# Machine-local configuration
+.env
+.env.*
+!.env.example

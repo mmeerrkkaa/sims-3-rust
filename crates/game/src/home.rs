@@ -950,6 +950,7 @@ pub fn move_in(
         let e = spawn_sim_full(&mut commands, &mut sctx, s, exit, model);
         commands.entity(e).insert((
             Visibility::Hidden,
+            crate::interact::OffLot,
             crate::town::Townie { next_walk: 8.0 * 60.0 + 5.0 + k as f64 * 37.0, walking: false },
             DespawnOnExit(AppState::InGame),
         ));

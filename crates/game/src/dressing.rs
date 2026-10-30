@@ -7,7 +7,6 @@ use bevy::prelude::*;
 
 use crate::PlayMode;
 use crate::anim::{ActionClip, ClipPlayer};
-use crate::clock::{GameClock, SPEED_RATES};
 use crate::sim::{Age, Pose, Sim, SimAnim};
 use crate::simbody::{ChangedInto, OutfitKind, Wearing};
 
@@ -15,7 +14,7 @@ pub struct DressingPlugin;
 
 impl Plugin for DressingPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, spin.run_if(in_state(PlayMode::Live)));
+        app.add_systems(Update, spin.run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay));
     }
 }
 
@@ -73,14 +72,14 @@ pub fn put_on(e: &mut EntityCommands, to: Option<OutfitKind>, chosen: bool) {
 
 /// Turns the spin: sparkles, the clothes changed mid-turn, and done when its clip is.
 fn spin(
+    delta: Res<crate::clock::SimDelta>,
     mut commands: Commands,
-    time: Res<Time>,
-    clock: Res<GameClock>,
     mut sims: Query<(Entity, &Sim, &mut ClothesSpin, &mut SimAnim, Option<&ClipPlayer>, Option<&Wearing>)>,
     mut sparkles: MessageWriter<crate::effects::SpinSparkle>,
     mut changed: MessageWriter<crate::laundry::ChangedClothes>,
 ) {
-    let dt = time.delta_secs().min(0.1) * SPEED_RATES[clock.speed];
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Dressing);
+    let dt = delta.0;
     for (e, sim, mut s, mut anim, player, wearing) in &mut sims {
         // (Stood still for it.)
         if anim.pose == Pose::Walk {

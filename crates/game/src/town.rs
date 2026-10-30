@@ -33,6 +33,34 @@ pub struct Townie {
     pub walking: bool,
 }
 
+/// Leave detailed simulation atomically: release claims before dropping queued actions.
+/// The stable Sim/relationships/needs remain on the entity for later activation.
+pub fn retire_to_background(commands: &mut Commands, actor: Entity, next_walk: f64) {
+    commands.queue(move |world: &mut World| {
+        if world.get_entity(actor).is_err() { return; }
+        if world.get::<crate::sim::HouseholdMember>(actor).is_some() { return; }
+        for mut owner in world.query::<&mut crate::interact::UsedBy>().iter_mut(world) {
+            if owner.0 == Some(actor) { owner.0 = None; }
+        }
+        for mut owner in world.query::<&mut crate::interact::SecondPlace>().iter_mut(world) {
+            if owner.0 == Some(actor) { owner.0 = None; }
+        }
+        let partners: Vec<_> = world.query::<(Entity, &crate::interact::SocialPartner)>().iter(world)
+            .filter(|(e, p)| *e == actor || p.0 == actor).map(|(e, _)| e).collect();
+        for partner in partners { world.entity_mut(partner).remove::<crate::interact::SocialPartner>(); }
+        if let Some(mut privacy) = world.get_resource_mut::<crate::privacy::Privacy>() {
+            privacy.objects.retain(|_, owner| *owner != actor);
+        }
+        let mut entity = world.entity_mut(actor);
+        if let Some(mut queue) = entity.get_mut::<crate::interact::ActionQueue>() { queue.0.clear(); }
+        if let Some(mut anim) = entity.get_mut::<SimAnim>() { anim.pose = Pose::Stand; }
+        if let Some(mut player) = entity.get_mut::<crate::anim::ClipPlayer>() { player.root_offset = Vec3::ZERO; }
+        entity.remove::<(crate::visit::OnLot, crate::visit::LotGuest, PathFollow, crate::nav::SpiralClimb,
+            crate::jog::Jogging, crate::doorbell::AtTheDoor, crate::interact::GoingHome, crate::interact::Visitor, crate::anim::ActionClip)>()
+            .insert((Townie { next_walk, walking: false }, crate::interact::OffLot, Visibility::Hidden, Floor(1), crate::sim::DecayScale::default()));
+    });
+}
+
 fn stroll(
     mut commands: Commands,
     clock: Res<GameClock>,
@@ -51,7 +79,7 @@ fn stroll(
                 t.next_walk = clock.minutes + rng.random_range(40.0..160.0);
                 *vis = Visibility::Hidden;
                 anim.pose = Pose::Stand;
-                commands.entity(e).remove::<(PathFollow, crate::jog::Jogging)>();
+                retire_to_background(&mut commands, e, t.next_walk);
             }
             continue;
         }
@@ -90,6 +118,6 @@ fn stroll(
         } else if (athletic || wearing_coat) && !coat {
             commands.entity(e).remove::<crate::simbody::Wearing>().insert(crate::aging::NeedsNewBody);
         }
-        commands.entity(e).insert(pf);
+        commands.entity(e).remove::<crate::interact::OffLot>().insert(pf);
     }
 }

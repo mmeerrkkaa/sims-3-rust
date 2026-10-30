@@ -2,6 +2,10 @@ mod aging;
 mod anim;
 mod appliances;
 mod autotest;
+mod perf;
+mod perf_metrics;
+mod perf_scopes;
+mod population_stress;
 mod baked;
 mod bait;
 mod klepto;
@@ -179,6 +183,10 @@ mod thumbs;
 mod town;
 mod traffic;
 mod visit;
+#[cfg(local_validation)]
+mod open_lots_test;
+#[cfg(local_validation)]
+mod npc_ownership_test;
 mod wishes;
 mod dialog;
 mod lifetime;
@@ -281,6 +289,8 @@ fn main() {
             terrain::TerrainPlugin,
             camera::CameraPlugin,
             autotest::AutoTestPlugin,
+            perf::PerfPlugin,
+            population_stress::StressPlugin,
         ))
         .add_plugins((
             clock::ClockPlugin,

@@ -8,6 +8,7 @@ name = "sims3"
 path = "src/main.rs"
 
 [dependencies]
+s3sim = { path = "../s3sim" }
 s3pkg = { path = "../s3pkg" }
 s3formats = { path = "../s3formats" }
 s3bake = { path = "../s3bake" }

@@ -22,7 +22,7 @@ pub struct GroupsPlugin;
 
 impl Plugin for GroupsPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Conversations>().add_systems(Update, (join_talks, leave_talks, listen_along, call_over).chain().run_if(in_state(PlayMode::Live)));
+        app.init_resource::<Conversations>().add_systems(Update, (join_talks, leave_talks, listen_along, call_over).chain().run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay));
     }
 }
 
@@ -171,6 +171,7 @@ fn join_talks(
     who: Query<(&Sim, &Transform)>,
     mut counted: Local<HashMap<Entity, (Entity, usize, bool)>>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra21);
     let mut rng = rand::rng();
     let now = clock.minutes;
     for (me, queue) in &sims {
@@ -213,6 +214,7 @@ fn leave_talks(
     clock: Res<crate::clock::GameClock>,
     sims: Query<(&ActionQueue, &Transform, Has<SocialPartner>, Option<&crate::anim::ActionClip>)>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra22);
     let mut leaving = Vec::new();
     let mut over = Vec::new();
     for (id, g) in &convs.groups {
@@ -257,6 +259,7 @@ fn leave_talks(
 
 #[allow(clippy::type_complexity)]
 fn stop_listening(commands: &mut Commands, sims: &Query<(&ActionQueue, &Transform, Has<SocialPartner>, Option<&crate::anim::ActionClip>)>, e: Entity) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra23);
     let Ok(s) = sims.get(e) else { return };
     commands.entity(e).remove::<Listening>();
     if s.3.is_some_and(is_listen_clip) {
@@ -291,16 +294,17 @@ fn listen_clip(child: bool) -> crate::anim::ActionClip {
 /// their need for company met a little.
 #[allow(clippy::type_complexity)]
 fn listen_along(
+    delta: Res<crate::clock::SimDelta>,
     mut commands: Commands,
     convs: Res<Conversations>,
-    clock: Res<crate::clock::GameClock>,
     time: Res<Time>,
     mut sims: Query<
         (Entity, &Sim, &ActionQueue, &mut Transform, &mut crate::sim::Motives, Has<SocialPartner>, Has<Listening>, Option<&crate::nav::PathFollow>, Option<&crate::anim::ActionClip>, Has<crate::carry::Holding>),
         With<SimAnim>,
     >,
 ) {
-    let dt = time.delta_secs().min(0.1) * crate::clock::SPEED_RATES[clock.speed];
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra24);
+    let dt = delta.0;
     let spots: HashMap<Entity, Vec3> = sims.iter().map(|s| (s.0, s.3.translation)).collect();
     for (me, sim, queue, mut tf, mut motives, partner, listening, path, clip, holding) in &mut sims {
         // (Not one with a little one in their arms: they keep hold of them, the game's carry.)
@@ -352,6 +356,7 @@ fn call_over(
     spots: Query<&GlobalTransform, With<Sim>>,
     mut queues: Query<&mut ActionQueue, Without<CallingOver>>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra25);
     for (me, call, mut tf, queue) in &mut callers {
         let calling = queue.0.front().is_some_and(|a| a.label == INVITE_LABEL);
         if let Ok(t) = spots.get(call.0) {

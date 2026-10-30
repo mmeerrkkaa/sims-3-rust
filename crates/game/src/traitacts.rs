@@ -36,7 +36,7 @@ pub struct TraitActsPlugin;
 impl Plugin for TraitActsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Mess>()
-            .add_systems(Update, (began.after(crate::interact::run_actions), act_test, frights, faint_now.before(crate::interact::run_actions), mess, contemplate_test).run_if(in_state(PlayMode::Live)));
+            .add_systems(crate::clock::SimTick, (began.after(crate::interact::run_actions), act_test, frights, faint_now.before(crate::interact::run_actions), mess, contemplate_test).run_if(in_state(PlayMode::Live)));
     }
 }
 

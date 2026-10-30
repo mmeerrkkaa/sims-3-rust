@@ -58,6 +58,7 @@ pub(crate) fn open(fonts: &mut Assets<Font>) -> Option<UiAssets> {
 }
 
 fn open_ui(mut commands: Commands, mut fonts: ResMut<Assets<Font>>) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra31);
     if let Some(ui) = open(&mut fonts) {
         commands.insert_resource(ui);
     }
@@ -65,6 +66,7 @@ fn open_ui(mut commands: Commands, mut fonts: ResMut<Assets<Font>>) {
 
 /// (On a first run the interface is converted while the town loads.)
 fn open_ui_when_baked(mut commands: Commands, ui: Option<Res<UiAssets>>, mut fonts: ResMut<Assets<Font>>, state: Res<State<crate::AppState>>, mut tried: Local<bool>) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra32);
     if ui.is_some() || *tried || *state.get() != crate::AppState::InGame {
         return;
     }
@@ -138,6 +140,7 @@ fn scrollbars(
     mouse: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra33);
     let Ok(window) = windows.single() else { return };
     for (e, mut bar, computed, tf, visibility) in &mut bars {
         if !visibility.get() {
@@ -219,6 +222,7 @@ const FILL_CLIP: u32 = 0x000f_bc02;
 const FILL_FILL: u32 = 0x000f_bc01;
 
 fn fill_bars(bars: Query<&UiFillBar, Changed<UiFillBar>>, mut nodes: Query<&mut Node>, pictures: Query<&UiPicture>, mut images: Query<&mut ImageNode>) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra34);
     for b in &bars {
         let vertical = b.size.y > b.size.x;
         let full = if vertical { b.size.y } else { b.size.x };
@@ -278,6 +282,7 @@ fn set_icons(
     mut nodes: Query<&mut Node>,
     parents: Query<&ChildOf>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra35);
     for (e, b, s, opening) in &q {
         if let Some(i) = b.icon()
             && let Ok((mut img, vis)) = pics.get_mut(i)
@@ -429,6 +434,7 @@ fn apply_shades(
     unshaded: Query<&Unshaded>,
     mut removed: RemovedComponents<Shade>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra36);
     let dim = |c: Color, f: f32| {
         let s = c.to_srgba();
         Color::srgba(s.red * f, s.green * f, s.blue * f, s.alpha)
@@ -466,6 +472,7 @@ fn apply_shades(
 pub struct Selected;
 
 fn select_marked(mut q: Query<&mut UiButton, Added<Selected>>) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra37);
     for mut b in &mut q {
         b.selected = true;
     }
@@ -909,6 +916,7 @@ fn place(w: &UiWindow) -> Node {
 
 /// Buttons show their state's picture (and tint their icon), as the game's.
 fn button_states(mut buttons: Query<(&Interaction, &UiButton), Or<(Changed<Interaction>, Changed<UiButton>)>>, mut pics: Query<&mut ImageNode>) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra38);
     for (i, b) in &mut buttons {
         let base = if b.disabled {
             1
@@ -964,6 +972,7 @@ fn sliders(
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
     mut nodes: Query<&mut Node>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra39);
     let Ok(window) = windows.single() else { return };
     for (mut s, i, computed, tf, vis) in &mut q {
         if !vis.get() {
@@ -1041,6 +1050,7 @@ fn combos(
     (mut images, mut fonts): (ResMut<Assets<Image>>, ResMut<Assets<Font>>),
     mut play: MessageWriter<crate::sound::PlaySound>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra40);
     // A click on the box opens or closes its list.
     for (e, i) in &clicks {
         if *i == Interaction::Pressed

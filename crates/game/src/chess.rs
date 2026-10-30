@@ -37,7 +37,7 @@ pub struct ChessPlugin;
 impl Plugin for ChessPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ChessTables>()
-            .add_systems(Update, (take_seats.before(crate::interact::run_actions), play_chess.after(crate::interact::run_actions), ranked_matches, watch_test).run_if(in_state(PlayMode::Live)));
+            .add_systems(crate::clock::SimTick, (take_seats.before(crate::interact::run_actions), play_chess.after(crate::interact::run_actions), ranked_matches, watch_test).run_if(in_state(PlayMode::Live)).in_set(crate::clock::TickPhase::Actions));
     }
 }
 

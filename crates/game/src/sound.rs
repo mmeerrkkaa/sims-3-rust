@@ -256,6 +256,7 @@ fn clip_cues(
     loops: Query<(Entity, &CueLoop)>,
     (building, sidewalk, cams): (Option<Res<crate::building::ActiveBuilding>>, Option<Res<crate::town::Sidewalk>>, Query<&SimsCamera>),
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::ClipCues);
     let cam = cams.single().ok();
     for cue in cues.read() {
         if cue.action == SoundAction::StopLoop && cue.name.is_empty() {
@@ -319,6 +320,7 @@ fn play_sounds(
     mut sources: ResMut<Assets<AudioSource>>,
     cams: Query<&SimsCamera>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::PlaySounds);
     let cam = cams.single().ok();
     for r in reqs.read() {
         let Some(def) = sounds.def(&r.name) else { continue };

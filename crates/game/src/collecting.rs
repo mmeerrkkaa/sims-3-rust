@@ -19,7 +19,7 @@ use crate::nav::{Floor, Obstacle};
 use crate::objects::{AssetCtx, ObjectAssets};
 use crate::sim::Sim;
 use crate::inventory::{Inventory, ItemKind, give};
-use crate::visit::{LotObject, VisitedLot};
+use crate::visit::{LotObject, VisitedLot, OpenLots};
 use crate::{AppState, PlayMode};
 
 pub struct CollectingPlugin;
@@ -108,11 +108,14 @@ const BUTTERFLY_HOURS: std::ops::Range<f32> = 7.0..19.0;
 
 /// The finds and fishing spots of the community lot being visited.
 #[derive(Resource, Default)]
-struct LotFinds {
+struct FindsForLot {
     lot: Option<usize>,
     spawners: Vec<Spawner>,
     spots: Vec<Entity>,
 }
+
+#[derive(Resource, Default)]
+struct LotFinds(std::collections::BTreeMap<usize, FindsForLot>);
 
 /// How far from its spawner a find turns up (metres).
 const SPREAD: f32 = 4.0;
@@ -185,127 +188,137 @@ fn lot_finds(
     world: Res<CurrentWorld>,
     (data, catalog, mut assets, ui): (Res<Baked>, Res<Catalog>, ResMut<ObjectAssets>, Option<Res<crate::icons::GameUi>>),
     (mut meshes, mut images, mut mats): (ResMut<Assets<Mesh>>, ResMut<Assets<Image>>, ResMut<Assets<StandardMaterial>>),
-    visited: Option<Res<VisitedLot>>,
+    visited: Res<OpenLots>,
     building: Option<Res<crate::building::ActiveBuilding>>,
-    mut finds: ResMut<LotFinds>,
+    mut lots: ResMut<LotFinds>,
     alive: Query<(), With<Pickup>>,
 ) {
-    let lot = visited.as_ref().filter(|v| !v.grid.dirty).map(|v| v.lot);
-    if finds.lot != lot {
-        for s in finds.spawners.drain(..) {
-            for e in s.out {
-                commands.entity(e).try_despawn();
-            }
-        }
-        for e in finds.spots.drain(..) {
+    lots.0.retain(|lot, finds| {
+        if visited.0.contains_key(lot) { return true; }
+        for e in finds.spots.drain(..).chain(finds.spawners.drain(..).flat_map(|s| s.out)) {
             commands.entity(e).try_despawn();
         }
-        finds.lot = lot;
-        let (Some(lot), Some(v), Some(ui)) = (lot, visited.as_ref(), ui.as_ref()) else { return };
-        let Some(b) = world.data.buildings.get(&lot) else { return };
-        let mut rng = rand::rng();
-        let ripple = meshes.add(ripple_mesh());
-        let water = mats.add(StandardMaterial {
-            base_color: Color::srgba(0.85, 0.95, 1.0, 0.55),
-            alpha_mode: AlphaMode::Blend,
-            unlit: true,
-            double_sided: true,
-            cull_mode: None,
-            ..default()
-        });
-        // (The shore's where Sims arriving can walk to: not an island's.)
-        let reached = v.grid.reachable_from(v.exit);
-        for o in &b.objects {
-            let class = o.script.rsplit('.').next().unwrap_or("").to_string();
-            let at = Vec3::from(o.position);
-            if class.starts_with("FishingSpawner") {
-                // The spot faces the shore: where a Sim stands to fish it, facing the water.
-                let Some((x, z)) = v.grid.nearest_reached(at.xz(), &reached).or_else(|| v.grid.nearest_free(at.xz())) else { continue };
-                let shore = v.grid.center_of(x, z);
-                let to_shore = (shore - at.xz()).normalize_or(Vec2::Y);
-                let y = world.data.sea_level.max(world.data.heightmap.sample(at.x, at.z)) + 0.05;
-                let e = commands
-                    .spawn((
-                        Mesh3d(ripple.clone()),
-                        MeshMaterial3d(water.clone()),
-                        Transform::from_xyz(at.x, y, at.z).with_rotation(Quat::from_rotation_y(to_shore.x.atan2(to_shore.y))),
-                        GameObject {
-                            kind: ObjectKind::FishingSpot,
-                            name: "Fishing Spot".into(),
-                            objd: (0, 0, 0),
-                            price: 0,
-                            center: Vec2::ZERO,
-                            half: Vec2::splat(0.3),
-                            height: 0.1,
-                            route: Some((Vec2::new(0.0, shore.distance(at.xz())), Vec2::NEG_Y)),
-                        },
-                        UsedBy::default(),
-                        FishingSpot { class },
-                        LotObject(lot),
-                        Floor(1),
-                        DespawnOnExit(AppState::InGame),
-                    ))
-                    .id();
-                finds.spots.push(e);
-            } else if class.starts_with("InsectSpawner")
-                && let Some(info) = ui.data.spawners.iter().find(|s| s.class == class)
-            {
-                let butterflies = info.items.iter().any(|(k, _)| k.starts_with("Butterfly"));
-                let mut s = Spawner { class, at, next: clock.minutes + rng.random_range(20.0..90.0), out: Vec::new(), butterflies };
-                if !butterflies || BUTTERFLY_HOURS.contains(&clock.hour_f()) {
-                    let mut ctx = AssetCtx { baked: &data.0, meshes: &mut meshes, images: &mut images, materials: &mut mats };
-                    for _ in 0..info.capacity.min(2) {
-                        if let Some(e) = spawn_insect(&mut commands, &mut assets, &mut ctx, &catalog, &data, ui, &world.data, v, &s) {
+        false
+    });
+    for v in visited.0.values().filter(|v| v.grid.ready()) {
+        let lot = Some(v.lot);
+        let finds = lots.0.entry(v.lot).or_default();
+        if finds.lot != lot {
+            for s in finds.spawners.drain(..) {
+                for e in s.out {
+                    commands.entity(e).try_despawn();
+                }
+            }
+            for e in finds.spots.drain(..) {
+                commands.entity(e).try_despawn();
+            }
+            finds.lot = lot;
+            let (Some(lot), Some(v), Some(ui)) = (lot, Some(v), ui.as_ref()) else { continue };
+            let Some(b) = world.data.buildings.get(&lot) else { continue };
+            let mut rng = rand::rng();
+            let ripple = meshes.add(ripple_mesh());
+            let water = mats.add(StandardMaterial {
+                base_color: Color::srgba(0.85, 0.95, 1.0, 0.55),
+                alpha_mode: AlphaMode::Blend,
+                unlit: true,
+                double_sided: true,
+                cull_mode: None,
+                ..default()
+            });
+            // (The shore's where Sims arriving can walk to: not an island's.)
+            let reached = v.grid.reachable_from(v.exit);
+            for o in &b.objects {
+                let class = o.script.rsplit('.').next().unwrap_or("").to_string();
+                let at = Vec3::from(o.position);
+                if class.starts_with("FishingSpawner") {
+                    // The spot faces the shore: where a Sim stands to fish it, facing the water.
+                    let Some((x, z)) = v.grid.nearest_reached(at.xz(), &reached).or_else(|| v.grid.nearest_free(at.xz())) else { continue };
+                    let shore = v.grid.center_of(x, z);
+                    let to_shore = (shore - at.xz()).normalize_or(Vec2::Y);
+                    let y = world.data.sea_level.max(world.data.heightmap.sample(at.x, at.z)) + 0.05;
+                    let e = commands
+                        .spawn((
+                            Mesh3d(ripple.clone()),
+                            MeshMaterial3d(water.clone()),
+                            Transform::from_xyz(at.x, y, at.z).with_rotation(Quat::from_rotation_y(to_shore.x.atan2(to_shore.y))),
+                            GameObject {
+                                kind: ObjectKind::FishingSpot,
+                                name: "Fishing Spot".into(),
+                                objd: (0, 0, 0),
+                                price: 0,
+                                center: Vec2::ZERO,
+                                half: Vec2::splat(0.3),
+                                height: 0.1,
+                                route: Some((Vec2::new(0.0, shore.distance(at.xz())), Vec2::NEG_Y)),
+                            },
+                            UsedBy::default(),
+                            FishingSpot { class },
+                            LotObject(lot),
+                            Floor(1),
+                            DespawnOnExit(AppState::InGame),
+                        ))
+                        .id();
+                    finds.spots.push(e);
+                } else if class.starts_with("InsectSpawner")
+                    && let Some(info) = ui.data.spawners.iter().find(|s| s.class == class)
+                {
+                    let butterflies = info.items.iter().any(|(k, _)| k.starts_with("Butterfly"));
+                    let mut s = Spawner { class, at, next: clock.minutes + rng.random_range(20.0..90.0), out: Vec::new(), butterflies };
+                    if !butterflies || BUTTERFLY_HOURS.contains(&clock.hour_f()) {
+                        let mut ctx = AssetCtx { baked: &data.0, meshes: &mut meshes, images: &mut images, materials: &mut mats };
+                        for _ in 0..info.capacity.min(2) {
+                            if let Some(e) = spawn_insect(&mut commands, &mut assets, &mut ctx, &catalog, &data, ui, &world.data, v, &s) {
+                                s.out.push(e);
+                            }
+                        }
+                    }
+                    finds.spawners.push(s);
+                } else if (class.starts_with("RockGemMetalSpawner") || class.starts_with("SeedSpawner")) && ui.data.spawners.iter().any(|s| s.class == class) {
+                    let mut s = Spawner { class, at, next: clock.minutes + rng.random_range(60.0..600.0), out: Vec::new(), butterflies: false };
+                    // Something already lying about, most of the time.
+                    if rng.random_bool(0.7) {
+                        let mut ctx = AssetCtx { baked: &data.0, meshes: &mut meshes, images: &mut images, materials: &mut mats };
+                        if let Some(e) = spawn_find(&mut commands, &mut assets, &mut ctx, &catalog, &data, ui, &world.data, building.as_deref(), v, &s) {
                             s.out.push(e);
                         }
                     }
+                    finds.spawners.push(s);
                 }
-                finds.spawners.push(s);
-            } else if (class.starts_with("RockGemMetalSpawner") || class.starts_with("SeedSpawner")) && ui.data.spawners.iter().any(|s| s.class == class) {
-                let mut s = Spawner { class, at, next: clock.minutes + rng.random_range(60.0..600.0), out: Vec::new(), butterflies: false };
-                // Something already lying about, most of the time.
-                if rng.random_bool(0.7) {
-                    let mut ctx = AssetCtx { baked: &data.0, meshes: &mut meshes, images: &mut images, materials: &mut mats };
-                    if let Some(e) = spawn_find(&mut commands, &mut assets, &mut ctx, &catalog, &data, ui, &world.data, building.as_deref(), v, &s) {
-                        s.out.push(e);
-                    }
-                }
-                finds.spawners.push(s);
             }
+            continue;
         }
-        return;
-    }
-    // More turn up over time.
-    let (Some(v), Some(ui)) = (visited.as_ref(), ui.as_ref()) else { return };
-    let mut rng = rand::rng();
+        // More turn up over time.
+        let (Some(v), Some(ui)) = (Some(v), ui.as_ref()) else { continue };
+        let mut rng = rand::rng();
 
-    for i in 0..finds.spawners.len() {
-        finds.spawners[i].out.retain(|e| alive.contains(*e));
-        // Butterflies are gone by evening.
-        let s = &mut finds.spawners[i];
-        if s.butterflies && !BUTTERFLY_HOURS.contains(&clock.hour_f()) {
-            for e in s.out.drain(..) {
-                commands.entity(e).try_despawn();
+        for i in 0..finds.spawners.len() {
+            finds.spawners[i].out.retain(|e| alive.contains(*e));
+            // Butterflies are gone by evening.
+            let s = &mut finds.spawners[i];
+            if s.butterflies && !BUTTERFLY_HOURS.contains(&clock.hour_f()) {
+                for e in s.out.drain(..) {
+                    commands.entity(e).try_despawn();
+                }
+                continue;
             }
-            continue;
+            let s = &finds.spawners[i];
+            if clock.minutes < s.next {
+                continue;
+            }
+            let Some(info) = ui.data.spawners.iter().find(|x| x.class == s.class) else { continue };
+            let (lo, hi) = (info.hours.0.max(1.0), info.hours.1.max(info.hours.0.max(1.0) + 1.0));
+            let next = clock.minutes + rng.random_range(lo..hi) as f64 * 60.0;
+            let room = s.out.len() < info.capacity as usize;
+            let mut ctx = AssetCtx { baked: &data.0, meshes: &mut meshes, images: &mut images, materials: &mut mats };
+            let made = match (room, s.class.starts_with("InsectSpawner")) {
+                (false, _) => None,
+                (true, true) => spawn_insect(&mut commands, &mut assets, &mut ctx, &catalog, &data, ui, &world.data, v, s),
+                (true, false) => spawn_find(&mut commands, &mut assets, &mut ctx, &catalog, &data, ui, &world.data, building.as_deref(), v, s),
+            };
+            let s = &mut finds.spawners[i];
+            s.next = next;
+            s.out.extend(made);
         }
-        let s = &finds.spawners[i];
-        if clock.minutes < s.next {
-            continue;
-        }
-        let Some(info) = ui.data.spawners.iter().find(|x| x.class == s.class) else { continue };
-        let (lo, hi) = (info.hours.0.max(1.0), info.hours.1.max(info.hours.0.max(1.0) + 1.0));
-        let next = clock.minutes + rng.random_range(lo..hi) as f64 * 60.0;
-        let room = s.out.len() < info.capacity as usize;
-        let mut ctx = AssetCtx { baked: &data.0, meshes: &mut meshes, images: &mut images, materials: &mut mats };
-        let made = match (room, s.class.starts_with("InsectSpawner")) {
-            (false, _) => None,
-            (true, true) => spawn_insect(&mut commands, &mut assets, &mut ctx, &catalog, &data, ui, &world.data, v, s),
-            (true, false) => spawn_find(&mut commands, &mut assets, &mut ctx, &catalog, &data, ui, &world.data, building.as_deref(), v, s),
-        };
-        let s = &mut finds.spawners[i];
-        s.next = next;
-        s.out.extend(made);
     }
 }
 

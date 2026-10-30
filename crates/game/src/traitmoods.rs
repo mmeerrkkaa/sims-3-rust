@@ -90,6 +90,7 @@ fn trait_moods(
         (Without<crate::interact::OffLot>, Without<crate::rabbitholes::AtRabbitHole>, Without<crate::careers::AtWork>),
     >,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra52);
     let now = time.elapsed_secs();
     if now - *last < 1.0 {
         return;
@@ -227,6 +228,7 @@ fn keep(m: &mut Mut<Moodlets>, kind: MoodletKind, now: f64) {
 /// Socials' moodlets for the traits that feel them: an Excitable Sim's excitement, a Great
 /// Kisser's kiss.
 fn social_moods(clock: Res<crate::clock::GameClock>, mut done: MessageReader<Socialised>, mut sims: Query<(&Sim, &mut Moodlets, Option<&crate::social::Relationships>)>) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra53);
     let mut rng = rand::rng();
     for s in done.read() {
         let Ok([(a, _, rels), (b, ..)]) = sims.get_many([s.actor, s.target]) else { continue };

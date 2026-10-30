@@ -6,6 +6,29 @@ use crate::{AppState, PlayMode};
 
 pub struct ClockPlugin;
 
+/// Shared ordering for the transition from frame-driven gameplay to simulation ticks.
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SimPhase { Advance, Restore, Prepare, Step, Gameplay, Save }
+
+#[derive(bevy::ecs::schedule::ScheduleLabel, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SimTick;
+
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TickPhase { Needs, Actions, Motion }
+
+#[derive(Resource, Default)]
+pub struct TickWorkload {
+    pub steps: usize,
+    pub pending_seconds: f64,
+    pub pending_minutes: f64,
+    #[cfg(local_validation)]
+    injected: bool,
+    #[cfg(local_validation)]
+    saw_debt: bool,
+    #[cfg(local_validation)]
+    checked: bool,
+}
+
 /// Times shown on the twelve-hour clock (else the 24-hour): the options' `TwelveHourClock`.
 pub static TWELVE_HOUR: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
@@ -25,13 +48,19 @@ pub fn clock_time(h: u64, m: u64) -> String {
 
 impl Plugin for ClockPlugin {
     fn build(&self, app: &mut App) {
+        app.init_schedule(SimTick)
+            .configure_sets(SimTick, (TickPhase::Needs, TickPhase::Actions, TickPhase::Motion).chain())
+            .init_resource::<TickWorkload>()
+            .configure_sets(Update, (SimPhase::Advance, SimPhase::Restore, SimPhase::Prepare, SimPhase::Step, SimPhase::Gameplay, SimPhase::Save).chain())
+            .add_systems(Update, run_ticks.in_set(SimPhase::Step));
         app.init_resource::<Night>().insert_resource(GameClock::default())
             .insert_resource(SimDelta::default())
             .add_systems(
                 Update,
-                (speed_keys, skip_ends, advance_clock, day_night).chain().run_if(in_state(PlayMode::Live)),
+                (speed_keys, skip_ends, advance_clock.in_set(SimPhase::Advance), day_night).chain().run_if(in_state(PlayMode::Live)),
             )
-            .add_systems(OnEnter(AppState::InGame), reset_clock);
+            .add_systems(OnEnter(AppState::InGame), reset_clock)
+            .add_systems(OnEnter(PlayMode::Live), |mut clock: ResMut<GameClock>| clock.restored = true);
     }
 }
 
@@ -49,11 +78,14 @@ pub struct GameClock {
     paused_from: usize,
     /// Skipping: whose action it's skipping through, and which (its label).
     pub skipping: Option<(Entity, String)>,
+    pub timeline: s3sim::time::Timeline,
+    /// A load replaces the clock in Update; never step the restored world in that frame.
+    pub(crate) restored: bool,
 }
 
 impl Default for GameClock {
     fn default() -> Self {
-        Self { minutes: 8.0 * 60.0, speed: 1, paused_from: 1, skipping: None }
+        Self { minutes: 8.0 * 60.0, speed: 1, paused_from: 1, skipping: None, timeline: Default::default(), restored: false }
     }
 }
 
@@ -96,8 +128,15 @@ impl GameClock {
 }
 
 /// Game minutes elapsed this frame (0 while paused).
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Clone, Copy)]
 pub struct SimDelta(pub f32);
+
+impl SimDelta {
+    /// Keep a presentation speed cap without inventing a second simulation clock.
+    pub fn capped(self, rate: f32, maximum: f32) -> f32 {
+        if rate <= 0.0 { 0.0 } else { self.0 * rate.min(maximum) / rate }
+    }
+}
 
 fn reset_clock(mut clock: ResMut<GameClock>) {
     *clock = GameClock::default();
@@ -144,13 +183,56 @@ fn skip_ends(mut clock: ResMut<GameClock>, selected: Query<(Entity, &crate::inte
     }
 }
 
-pub(crate) fn advance_clock(time: Res<Time>, mut clock: ResMut<GameClock>, mut delta: ResMut<SimDelta>, modal: Query<(), With<crate::dialog::Modal>>, buy: Res<crate::buy::BuyMode>, menu: Res<crate::options::GameMenu>) {
+pub(crate) fn advance_clock(time: Res<Time<Real>>, mut clock: ResMut<GameClock>, mut delta: ResMut<SimDelta>, modal: Query<(), With<crate::dialog::Modal>>, buy: Res<crate::buy::BuyMode>, menu: Res<crate::options::GameMenu>) {
     // Normal speed: one game minute per real second, like the original (and the game stands
     // still while a question's waiting for an answer).
     let rate = if modal.is_empty() && !buy.active && !menu.is_open() { SPEED_RATES[clock.speed] } else { 0.0 };
-    let dt = time.delta_secs().min(0.1) * rate;
-    clock.minutes += dt as f64;
-    delta.0 = dt;
+    if !clock.restored { clock.timeline.admit(time.delta(), rate as u32); }
+    delta.0 = 0.0;
+}
+
+fn run_ticks(world: &mut World) {
+    const MAX_STEPS: usize = 4;
+    world.resource_mut::<TickWorkload>().steps = 0;
+    if world.get_resource::<State<PlayMode>>().is_none_or(|s| *s.get() != PlayMode::Live) { return; }
+    let restored = world.resource::<GameClock>().restored;
+    world.resource_mut::<GameClock>().restored = false;
+    let modal = world.query_filtered::<(), With<crate::dialog::Modal>>().iter(world).next().is_some();
+    let paused = world.resource::<GameClock>().speed == 0 || modal
+        || world.resource::<crate::buy::BuyMode>().active || world.resource::<crate::options::GameMenu>().is_open();
+    let mut total = 0.0;
+    if !paused && !restored {
+        #[cfg(local_validation)]
+        if std::env::var_os("SIM_FIXED_TEST").is_some() && !world.resource::<TickWorkload>().injected && world.contains_resource::<crate::interact::Household>() {
+            let rate = SPEED_RATES[world.resource::<GameClock>().speed] as u32;
+            world.resource_mut::<GameClock>().timeline.admit(std::time::Duration::from_millis(500), rate);
+            world.resource_mut::<TickWorkload>().injected = true;
+        }
+        for _ in 0..MAX_STEPS {
+            let Some(minutes) = world.resource_mut::<GameClock>().timeline.pop() else { break };
+            world.resource_mut::<GameClock>().minutes += minutes;
+            world.resource_mut::<SimDelta>().0 = minutes as f32;
+            world.run_schedule(SimTick);
+            total += minutes;
+            world.resource_mut::<TickWorkload>().steps += 1;
+        }
+    }
+    // Legacy once-per-frame consumers receive exactly the amount actually simulated.
+    world.resource_mut::<SimDelta>().0 = total as f32;
+    let (seconds, minutes) = {
+        let clock = world.resource::<GameClock>();
+        (clock.timeline.pending_seconds(), clock.timeline.pending_minutes())
+    };
+    let mut workload = world.resource_mut::<TickWorkload>();
+    workload.pending_seconds = seconds;
+    workload.pending_minutes = minutes;
+    #[cfg(local_validation)]
+    if workload.injected && seconds > 0.3 { workload.saw_debt = true; }
+    #[cfg(local_validation)]
+    if workload.saw_debt && !workload.checked && seconds < s3sim::time::STEP_NS as f64 / 1e9 {
+        workload.checked = true;
+        info!("SIM_FIXED_TEST PASS: injected 500 ms retained beyond four-step budget and drained without discarding time");
+    }
 }
 
 /// The sun's height (-1..1, 0 at the horizon): up at 6:00, highest at 13:00, down at 20:00, as
@@ -222,7 +304,7 @@ mod tests {
     #[test]
     fn shopping_blocks_speed_keys_and_simulation_even_if_speed_was_changed() {
         let mut app = App::new();
-        let mut time = Time::<()>::default();
+        let mut time = Time::<Real>::default();
         time.advance_by(std::time::Duration::from_secs_f32(0.1));
         app.insert_resource(time)
             .init_resource::<GameClock>()
@@ -242,7 +324,7 @@ mod tests {
         app.world_mut().resource_mut::<crate::buy::BuyMode>().active = false;
         app.world_mut().resource_mut::<ButtonInput<KeyCode>>().reset_all();
         app.update();
-        assert!(app.world().resource::<GameClock>().minutes > minutes);
-        assert!(app.world().resource::<SimDelta>().0 > 0.0);
+        assert!(app.world().resource::<GameClock>().timeline.pending_minutes() > 0.0);
+        assert_eq!(app.world().resource::<GameClock>().minutes, minutes);
     }
 }

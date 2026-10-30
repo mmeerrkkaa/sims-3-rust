@@ -6,8 +6,6 @@
 //! them up of their own accord now and then: thanking the cook after dinner, congratulating
 //! someone on their birthday.
 
-use std::collections::HashMap;
-
 use bevy::prelude::*;
 use rand::Rng;
 
@@ -21,8 +19,16 @@ pub struct TopicsPlugin;
 
 impl Plugin for TopicsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<AddTopic>().add_systems(Update, (give, (mess, expecting), events, doing, chatter).chain().run_if(in_state(PlayMode::Live)));
+        app.init_resource::<TopicWorkload>().add_message::<AddTopic>().add_systems(Update, (give, (mess, expecting), events, doing, chatter.after(crate::clock::advance_clock).after(crate::save::apply_loaded_game)).chain().run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay));
     }
+}
+
+/// Latest tick dispatch, for observing overload without dropping pending decisions.
+#[derive(Resource, Default)]
+pub struct TopicWorkload {
+    pub batch: usize,
+    pub pending: usize,
+    pub oldest_delay: s3sim::Tick,
 }
 
 /// A topic given a Sim (`about`: the Sim it concerns, when it does: the cook to thank).
@@ -129,6 +135,7 @@ fn mess(
     sims: Query<(Entity, &Sim, &Transform, &InheritedVisibility), With<HouseholdMember>>,
     objects: Query<(&crate::interact::GameObject, &Transform)>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra99);
     if clock.minutes < *next {
         return;
     }
@@ -153,6 +160,7 @@ fn mess(
 
 /// A pregnancy begun is news to announce (the game's "Announce Pregnancy").
 fn expecting(mut adds: MessageWriter<AddTopic>, new: Query<Entity, Added<crate::little::Pregnancy>>) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra100);
     for e in &new {
         adds.write(AddTopic::new(e, "Announce Pregnancy"));
     }
@@ -160,6 +168,7 @@ fn expecting(mut adds: MessageWriter<AddTopic>, new: Query<Entity, Added<crate::
 
 /// Every Sim has their topics.
 fn give(mut commands: Commands, sims: Query<Entity, (With<Sim>, Without<Topics>)>) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra101);
     for e in &sims {
         commands.entity(e).insert(Topics::default());
     }
@@ -180,6 +189,7 @@ fn events(
     mut was: Local<(bool, bool, f64, Option<Entity>)>,
     mut sims: Query<(Entity, &mut Topics, &Transform, &InheritedVisibility, Has<HouseholdMember>)>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra102);
     let ui = ui.as_deref();
     let now = clock.minutes;
     let mut given: Vec<(Entity, &'static str, Option<Entity>)> = adds.read().map(|a| (a.sim, a.name, a.about)).collect();
@@ -308,6 +318,7 @@ fn events(
 
 /// What a Sim's doing is a topic while they do it, and a little after.
 fn doing(clock: Res<GameClock>, mut sims: Query<(&ActionQueue, &mut Topics)>) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra103);
     for (q, mut t) in &mut sims {
         let Some(a) = q.0.front() else { continue };
         // (Not a social of the same name: telling someone to "Do Homework".)
@@ -322,7 +333,6 @@ fn doing(clock: Res<GameClock>, mut sims: Query<(&ActionQueue, &mut Topics)>) {
 
 /// How often an idle Sim may bring up a topic (game minutes), how likely they are to then, how
 /// near the other must be (metres), and how long before they bring one up again.
-const CHATTER_EVERY: f64 = 5.0;
 const CHATTER_CHANCE: f64 = 0.3;
 const CHATTER_REACH: f32 = 10.0;
 const CHATTER_REST: f64 = 60.0;
@@ -343,31 +353,48 @@ const FANCY: f32 = 30.0;
 #[allow(clippy::type_complexity)]
 fn chatter(
     clock: Res<GameClock>,
+    delta: Res<crate::clock::SimDelta>,
+    mut workload: ResMut<TopicWorkload>,
     settings: Res<crate::options::Settings>,
-    mut next: Local<f64>,
-    mut rested: Local<HashMap<Entity, f64>>,
-    mut said: Local<HashMap<(Entity, &'static str), f64>>,
+    mut story: ResMut<crate::story::TownStory>,
     members: Query<Has<crate::sim::Selected>, With<HouseholdMember>>,
     sides: Query<crate::social::SideQuery>,
     rels: Query<&crate::social::Relationships>,
     mut sims: Query<(Entity, &Sim, &Transform, &InheritedVisibility, &mut ActionQueue, &crate::sim::SimAnim), (Without<crate::interact::AtWork>, Without<crate::rabbitholes::AtRabbitHole>)>,
 ) {
-    if clock.minutes < *next {
-        return;
-    }
-    *next = clock.minutes + CHATTER_EVERY;
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra104);
+    workload.batch = 0;
+    if delta.0 <= 0.0 { return; }
+    let now = s3sim::tick_at(clock.minutes);
+    let plans = &mut story.conversations;
+    plans.expire(now);
+    plans.agenda.reconcile(sims.iter().map(|(_, sim, ..)| sim.id), now, 50);
+    let batch = plans.agenda.dispatch(now, 50, 16);
+    workload.batch = batch.residents.len();
+    workload.pending = batch.overdue;
+    workload.oldest_delay = batch.oldest_delay;
+    if batch.residents.is_empty() { return; }
+    let due: std::collections::HashSet<_> = batch.residents.into_iter().collect();
     let mut rng = rand::rng();
     let about: Vec<(Entity, Sim, Vec3)> = sims.iter().filter(|(_, s, _, shown, ..)| shown.get() && !s.age.is_little()).map(|(e, s, tf, ..)| (e, s.clone(), tf.translation)).collect();
     for (me, sim, tf, shown, mut queue, anim) in &mut sims {
+        if !due.contains(&sim.id) { continue; }
         // (The household's own free will, as the rest of what they do unasked.)
         if members.get(me).is_ok_and(|selected| settings.free_will_of(true, selected) == crate::options::FreeWill::Off) {
             continue;
         }
-        if !shown.get() || sim.age.is_little() || !queue.0.is_empty() || anim.pose == crate::sim::Pose::Lie || rested.get(&me).is_some_and(|t| clock.minutes < *t) || !rng.random_bool(CHATTER_CHANCE) {
+        if !shown.get() || sim.age.is_little() || !queue.0.is_empty() || anim.pose == crate::sim::Pose::Lie || plans.resting(sim.id, now) || !rng.random_bool(CHATTER_CHANCE) {
             continue;
         }
         let mine = crate::social::Side::of(me, sides.get(me).ok());
         let Ok(my_rels) = rels.get(me) else { continue };
+        let allowed: Vec<_> = crate::social::all_socials().filter(|(_, s)| {
+            s.game.is_some_and(|g| g.auto
+                && !g.topics.iter().all(|(t, _)| *t == crate::social::Topic::Always)
+                && crate::social::actor_may(g, &sim, true)
+                && !plans.said(sim.id, s.name, now))
+        }).collect();
+        let actor_mean = sim.traits.iter().any(|t| MEAN.contains(t));
         let mut fits: Vec<(usize, Entity, &'static str, f32)> = Vec::new();
         for (other, target, at) in &about {
             if *other == me || at.distance(tf.translation) > CHATTER_REACH {
@@ -375,12 +402,9 @@ fn chatter(
             }
             let theirs = crate::social::Side::of(*other, sides.get(*other).ok());
             let rel = my_rels.get(*other);
-            let mean = sim.traits.iter().any(|t| MEAN.contains(t)) || rel.friendship < DISLIKE;
-            for (i, s) in crate::social::all_socials() {
+            let mean = actor_mean || rel.friendship < DISLIKE;
+            for &(i, s) in &allowed {
                 let Some(g) = s.game else { continue };
-                if !g.auto || g.topics.iter().all(|(t, _)| *t == crate::social::Topic::Always) || !crate::social::actor_may(g, &sim, true) || said.contains_key(&(me, s.name)) {
-                    continue;
-                }
                 let fits_tone = match s.cat {
                     crate::social::SocialCat::Mean => mean,
                     crate::social::SocialCat::Romantic => rel.romance >= FANCY,
@@ -398,13 +422,10 @@ fn chatter(
         use rand::seq::IndexedRandom;
         if let Ok((i, other, name, _)) = fits.choose_weighted(&mut rng, |f| f.3).copied() {
             debug!("{} brings up {name}", sim.first);
-            rested.insert(me, clock.minutes + CHATTER_REST);
-            said.insert((me, name), clock.minutes + SAID_REST);
+            plans.remember(sim.id, name, now, s3sim::tick_at(CHATTER_REST), s3sim::tick_at(SAID_REST));
             queue.0.push_back(Action::new(name, ActionKind::Social { target: other, social: i }, true));
         }
     }
-    rested.retain(|_, t| *t > clock.minutes);
-    said.retain(|_, t| *t > clock.minutes);
 }
 
 #[cfg(test)]

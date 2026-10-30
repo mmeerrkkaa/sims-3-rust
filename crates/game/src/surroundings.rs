@@ -16,7 +16,7 @@ pub struct SurroundingsPlugin;
 
 impl Plugin for SurroundingsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (spoil_food, trash_cans, discard, wash_up, take_out_trash, read_somewhere, read_paper_somewhere, drop_unread_paper, watch_somewhere, stop_watching.before(crate::interact::run_actions), return_books, put_down_carried, surroundings).chain().run_if(in_state(PlayMode::Live)));
+        app.add_systems(crate::clock::SimTick, (spoil_food, trash_cans, discard, wash_up, take_out_trash, read_somewhere, read_paper_somewhere, drop_unread_paper, watch_somewhere, stop_watching.before(crate::interact::run_actions), return_books, put_down_carried, surroundings).chain().run_if(in_state(PlayMode::Live)));
     }
 }
 
@@ -57,6 +57,7 @@ fn spoil_food(
     mut meals: Query<(Entity, &mut GameObject, Option<&ServedAt>), (With<Meal>, Without<Spoiled>)>,
     mut notes: ResMut<Notifications>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra8);
     for (e, mut obj, served) in &mut meals {
         let Some(at) = served else {
             commands.entity(e).insert(ServedAt(clock.minutes));
@@ -77,6 +78,7 @@ fn spoil_food(
 
 /// Every trash can keeps count of what's in it.
 fn trash_cans(mut commands: Commands, cans: Query<(Entity, &GameObject), Without<TrashFill>>) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra9);
     for (e, o) in &cans {
         if matches!(o.kind, ObjectKind::TrashCan | ObjectKind::TrashCompactor) {
             commands.entity(e).insert(TrashFill(0));
@@ -90,6 +92,7 @@ fn discard(
     mut cans: Query<(&GameObject, &Transform, &mut TrashFill)>,
     mut notes: ResMut<Notifications>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra10);
     for (e, tf) in &sims {
         commands.entity(e).remove::<Discarded>();
         let Some((obj, _, mut fill)) = cans.iter_mut().min_by(|a, b| a.1.translation.distance(tf.translation).total_cmp(&b.1.translation.distance(tf.translation))) else {
@@ -113,6 +116,7 @@ fn wash_up(
     mut sims: Query<(Entity, &Transform, &mut crate::interact::ActionQueue), With<WashUp>>,
     objects: Query<(Entity, &GameObject, &Transform, &crate::interact::UsedBy), Without<crate::interact::Broken>>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra11);
     for (e, tf, mut queue) in &mut sims {
         commands.entity(e).remove::<WashUp>();
         // (The nearest about the lot, sooner on the same floor.)
@@ -163,6 +167,7 @@ fn watch_somewhere(
     mut sims: Query<(Entity, &WatchFrom, &mut crate::interact::ActionQueue)>,
     seats: Query<(Entity, &GameObject, &Transform, &crate::interact::UsedBy, Option<&crate::interact::SecondPlace>), Without<crate::interact::Broken>>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra12);
     for (e, from, mut queue) in &mut sims {
         commands.entity(e).remove::<WatchFrom>();
         let Ok((_, _, ttf, ..)) = seats.get(from.0) else { continue };
@@ -205,6 +210,7 @@ fn stop_watching(
     objects: Query<&GameObject>,
     unavailable: Query<(), Or<(With<crate::interact::Broken>, With<crate::buy::HeldObject>, With<crate::buyhistory::HistoryHidden>)>>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra13);
     for (e, mut queue, watching) in &mut sims {
         let active = queue.0.front_mut().is_some_and(|a| {
             let crate::interact::ActionKind::Object { target, def } = a.kind else { return false };
@@ -234,6 +240,7 @@ fn read_paper_somewhere(
     mut sims: Query<(Entity, &Transform, &PaperInHand, &mut crate::interact::ActionQueue), Added<PaperInHand>>,
     seats: Query<(Entity, &GameObject, &Transform, &crate::interact::UsedBy, Option<&crate::interact::SecondPlace>), Without<crate::interact::Broken>>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra14);
     for (e, tf, paper, mut queue) in &mut sims {
         let read = |kind: ObjectKind| crate::interact::interactions_for(kind).iter().position(|d| d.special == crate::interact::Special::ReadPaper);
         let seat = seats
@@ -260,6 +267,7 @@ fn read_paper_somewhere(
 
 /// A paper carried off and not read after all is put back where it lay.
 fn drop_unread_paper(mut commands: Commands, sims: Query<(Entity, &PaperInHand, &crate::interact::ActionQueue)>) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra15);
     for (e, paper, queue) in &sims {
         if !queue.current().is_some_and(|a| a.label == "Read the Paper") {
             commands.entity(paper.0).try_insert(Visibility::Inherited);
@@ -286,6 +294,7 @@ fn return_books(
     mut sims: Query<(Entity, &BookFrom, &mut crate::interact::ActionQueue)>,
     shelves: Query<(), (With<GameObject>, Without<crate::interact::Broken>)>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra16);
     for (e, from, mut queue) in &mut sims {
         if queue.current().is_some_and(|a| a.label == "Read Book" && !a.cancel) {
             continue;
@@ -309,6 +318,7 @@ fn read_somewhere(
     mut sims: Query<(Entity, &Transform, &ReadSomewhere, &mut crate::interact::ActionQueue)>,
     seats: Query<(Entity, &GameObject, &Transform, &crate::interact::UsedBy, Option<&crate::interact::SecondPlace>), Without<crate::interact::Broken>>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra17);
     for (e, tf, shelf, mut queue) in &mut sims {
         commands.entity(e).remove::<ReadSomewhere>();
         let read = |kind: ObjectKind| crate::interact::interactions_for(kind).iter().position(|d| d.special == crate::interact::Special::ReadBook);
@@ -339,6 +349,7 @@ fn read_somewhere(
 /// What's carried is put down once it's where it was going (being washed, eaten, thrown out),
 /// or once that's given up.
 fn put_down_carried(mut commands: Commands, sims: Query<(Entity, &crate::anim::Carrying, &crate::interact::ActionQueue, Has<crate::anim::ActionClip>, &crate::sim::SimAnim)>, objects: Query<&GameObject>) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra18);
     for (e, c, queue, acting, anim) in &sims {
         let goes_to: &[&str] = match c.0 {
             DISH_CARRY => &["Wash Dishes", "Load Dishes", "Eat"],
@@ -374,7 +385,7 @@ mod carry_tests {
     fn seated_viewing_stops_when_television_is_deleted_broken_or_removed_from_play() {
         for failure in 0..5 {
             let mut app = App::new();
-            app.add_systems(Update, stop_watching);
+            app.add_systems(crate::clock::SimTick, stop_watching);
             let object = |kind| GameObject { kind, name: "Test".into(), objd: (0, 0, 0), price: 0,
                 center: Vec2::ZERO, half: Vec2::ONE, height: 1.0, route: None };
             let tv = app.world_mut().spawn(object(ObjectKind::Tv)).id();
@@ -404,7 +415,7 @@ mod carry_tests {
     #[test]
     fn named_recipe_carries_pan_until_cancelled_or_stove_disappears() {
         let mut app = App::new();
-        app.add_systems(Update, put_down_carried);
+        app.add_systems(crate::clock::SimTick, put_down_carried);
         let stove = app.world_mut().spawn(GameObject { kind: ObjectKind::Stove, name: "Stove".into(), objd: (0, 0, 0), price: 0,
             center: Vec2::ZERO, half: Vec2::ONE, height: 1.0, route: None }).id();
         let def = interactions_for(ObjectKind::Stove).iter().position(|d| d.special == Special::ServeMeal).unwrap();
@@ -439,6 +450,7 @@ fn take_out_trash(
     cans: Query<(Entity, &GameObject, &Transform), Without<crate::interact::Broken>>,
     building: Option<Res<crate::building::ActiveBuilding>>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra19);
     for (e, tf, from, mut queue) in &mut sims {
         commands.entity(e).remove::<TakeOutTrash>();
         let Some(b) = building.as_ref() else { continue };
@@ -469,6 +481,7 @@ fn surroundings(
     mess: Query<(Entity, &GameObject, &Transform, Has<Spoiled>, Option<&TrashFill>)>,
     unflushed: Res<crate::toilets::Unflushed>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra20);
     let now = time.elapsed_secs();
     if now - *last < 1.0 {
         return;

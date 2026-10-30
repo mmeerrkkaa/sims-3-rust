@@ -29,7 +29,7 @@ pub struct TipsPlugin;
 impl Plugin for TipsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Performances>()
-            .add_systems(Update, (performances.after(crate::interact::run_actions), tip_jars.after(performances), tip_test, dance_test).run_if(in_state(PlayMode::Live)));
+            .add_systems(crate::clock::SimTick, (performances.after(crate::interact::run_actions), tip_jars.after(performances), tip_test, dance_test).run_if(in_state(PlayMode::Live)));
     }
 }
 

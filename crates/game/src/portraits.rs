@@ -281,11 +281,12 @@ fn take_portraits(
     joints: Query<&GlobalTransform, Without<Sim>>,
     lights: Query<Entity, With<StudioLight>>,
     time: Res<Time>,
-    (grid, visited): (Option<Res<crate::nav::NavGrid>>, Option<Res<crate::visit::VisitedLot>>),
+    (grid, visited): (Option<Res<crate::nav::NavGrid>>, Res<crate::visit::OpenLots>),
     mut images: ResMut<Assets<Image>>,
     (children, parts, pet_parts): (Query<&Children>, Query<(), (With<crate::simbody::SimModelPart>, With<Mesh3d>)>, Query<(), With<Mesh3d>>),
     pets: Query<(&crate::pets::Pet, &crate::pets::PetSkeleton, &GlobalTransform, &InheritedVisibility), Without<Sim>>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Portraits);
     let now = time.elapsed_secs();
     let Ok((cam_e, mut camera, mut cam_tf)) = cam.single_mut() else { return };
     // (A pet's face: where the camera goes for it.)
@@ -501,7 +502,7 @@ fn take_portraits(
         let room = first || {
             let eye = (tf.translation + (tf.rotation * Vec3::Z).with_y(0.0).normalize_or_zero() * 0.72).xz();
             let clear = |g: &crate::nav::NavGrid| g.cell_of(eye).map(|(x, z)| !g.is_blocked(x, z));
-            visited.as_ref().and_then(|v| clear(&v.grid)).or_else(|| grid.as_deref().and_then(clear)).unwrap_or(true)
+            visited.0.values().find_map(|v| clear(&v.grid)).or_else(|| grid.as_deref().and_then(clear)).unwrap_or(true)
         };
         if !settled || !room || !(vis.get() && upright || away) {
             portraits.queue.push_back(e);

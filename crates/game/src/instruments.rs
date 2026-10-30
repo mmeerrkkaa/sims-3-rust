@@ -20,7 +20,7 @@ pub struct InstrumentsPlugin;
 
 impl Plugin for InstrumentsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, instrument_music.after(crate::interact::run_actions).run_if(in_state(PlayMode::Live)));
+        app.add_systems(Update, instrument_music.in_set(crate::clock::SimPhase::Gameplay).run_if(in_state(PlayMode::Live)));
     }
 }
 

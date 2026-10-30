@@ -33,7 +33,7 @@ pub struct TerrariumPlugin;
 
 impl Plugin for TerrariumPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<PendingTerrariums>().add_systems(Update, (kinds, restore, terrarium_test, requests, live, dirt, scurry).chain().run_if(in_state(PlayMode::Live)));
+        app.init_resource::<PendingTerrariums>().add_systems(Update, (kinds, restore, terrarium_test, requests, live, dirt, scurry).chain().run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay));
     }
 }
 
@@ -419,8 +419,9 @@ fn terrarium_test(
 }
 
 /// The pets hunger, eat from their dishes, and die starved or old.
-fn live(mut commands: Commands, time: Res<Time>, clock: Res<crate::clock::GameClock>, mut pets: Query<&mut TerrariumPet>, mut notes: ResMut<Notifications>, ui: Option<Res<crate::icons::GameUi>>) {
-    let hours = time.delta_secs().min(0.1) * crate::clock::SPEED_RATES[clock.speed] / 60.0;
+fn live(
+    delta: Res<crate::clock::SimDelta>,mut commands: Commands, clock: Res<crate::clock::GameClock>, mut pets: Query<&mut TerrariumPet>, mut notes: ResMut<Notifications>, ui: Option<Res<crate::icons::GameUi>>) {
+    let hours = delta.0 / 60.0;
     for mut p in &mut pets {
         if p.dead {
             continue;

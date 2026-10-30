@@ -24,6 +24,7 @@ pub struct AutoArgs {
     pub shot_delay: f32,
     pub cam: Option<[f32; 5]>,
     pub exit_after: bool,
+    pub bench: bool,
     pub showroom: Option<(usize, usize)>,
     pub lot: Option<String>,
     pub portrait: bool,
@@ -67,6 +68,7 @@ impl AutoArgs {
     pub fn from_env() -> Self {
         let mut a = AutoArgs { shot_delay: 8.0, ..default() };
         let args: Vec<String> = std::env::args().collect();
+        a.bench = args.iter().any(|s| s == "--bench");
         let mut i = 1;
         while i < args.len() {
             let next = args.get(i + 1).cloned();
@@ -194,7 +196,8 @@ impl Plugin for AutoTestPlugin {
             .add_systems(First, tick_input_timeline.after(bevy::time::TimeSystems).run_if(in_state(crate::PlayMode::Live)))
             .add_systems(Update, list_cams)
             .add_systems(Update, auto_pick_world.run_if(in_state(AppState::MainMenu)))
-            .add_systems(Update, (apply_cam, watch_insect, ask_question, (keep_hungry, all_use, set_grime), wear_uniform, give_items, make_mess, show_uniforms, auto_terrain, auto_sculpt, (run_out, give_topics, give_homework), face_hook, shots_every, (show_designs, show_style), walls_hook, hang_paintings, buy_close, diving_board, route_debug, near_debug).run_if(in_state(crate::PlayMode::Live)))
+            .add_systems(Update, apply_cam.before(crate::camera::camera_control).run_if(in_state(crate::PlayMode::Live)))
+            .add_systems(Update, (watch_insect, ask_question, (keep_hungry, all_use, set_grime), wear_uniform, give_items, make_mess, show_uniforms, auto_terrain, auto_sculpt, (run_out, give_topics, give_homework), face_hook, shots_every, (show_designs, show_style), walls_hook, hang_paintings, buy_close, diving_board, route_debug, near_debug).run_if(in_state(crate::PlayMode::Live)))
             .add_systems(Update, (strand_swimmers, sim_cam).run_if(in_state(crate::PlayMode::Live)))
             .add_systems(PreUpdate, press_key.after(bevy::input::InputSystems).before(crate::buy::toggle_buy).run_if(in_state(crate::PlayMode::Live)))
             .add_systems(PreUpdate, hold_shift.after(bevy::input::InputSystems))
@@ -2091,11 +2094,11 @@ fn near_debug(
 /// grid cell is free and whether there's a way to it from the lot's way in (logged once).
 fn route_debug(
     mut done: Local<bool>,
-    visited: Option<Res<crate::visit::VisitedLot>>,
+    visited: Res<crate::visit::OpenLots>,
     objects: Query<(&crate::interact::GameObject, &Transform), With<crate::visit::LotObject>>,
 ) {
     let Ok(kind) = std::env::var("ROUTE_DEBUG") else { return };
-    let Some(v) = visited else { return };
+    let Some(v) = visited.0.values().next() else { return };
     if *done || v.grid.dirty {
         return;
     }
@@ -2665,7 +2668,7 @@ fn watch_insect(
 /// Applies `--cam` shortly after play starts (after the move-in camera placement).
 fn apply_cam(args: Res<AutoArgs>, time: Res<Time>, mut since: Local<Option<f32>>, mut done: Local<bool>, mut q: Query<&mut SimsCamera>, world: Option<Res<crate::loading::CurrentWorld>>) {
     let Some(c) = args.cam else { return };
-    if *done {
+    if *done && !args.bench {
         return;
     }
     // (Held for the first seconds of play, over the move-in camera.)

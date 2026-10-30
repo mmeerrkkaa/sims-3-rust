@@ -7,7 +7,6 @@
 
 use bevy::prelude::*;
 
-use crate::PlayMode;
 use crate::anim::ActionClip;
 use crate::interact::ActionQueue;
 use crate::nav::{Floor, NavGrid, PathFollow, UpperFloors};
@@ -17,7 +16,7 @@ pub struct CrowdingPlugin;
 
 impl Plugin for CrowdingPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, keep_apart.after(crate::nav::follow_paths).run_if(in_state(PlayMode::Live)));
+        app.add_systems(crate::clock::SimTick, keep_apart.after(crate::nav::follow_paths).in_set(crate::clock::TickPhase::Motion));
     }
 }
 
@@ -64,8 +63,7 @@ pub fn give_way(how: Gives, away: Vec2) -> Vec2 {
 
 #[allow(clippy::type_complexity)]
 fn keep_apart(
-    time: Res<Time>,
-    clock: Res<crate::clock::GameClock>,
+    delta: Res<crate::clock::SimDelta>,
     grid: Option<Res<NavGrid>>,
     upper: Option<Res<UpperFloors>>,
     mut sims: Query<
@@ -73,7 +71,8 @@ fn keep_apart(
         (With<Sim>, Without<crate::little::Carried>, Without<crate::carry::BeingMoved>, Without<crate::little::InCrib>),
     >,
 ) {
-    let dt = time.delta_secs().min(0.1) * crate::clock::SPEED_RATES[clock.speed];
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Crowding);
+    let dt = delta.0;
     if dt <= 0.0 {
         return;
     }

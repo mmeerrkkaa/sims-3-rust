@@ -7,7 +7,7 @@ use rand::Rng;
 use crate::baked::Baked;
 use s3bake::Key;
 use crate::camera::SimsCamera;
-use crate::clock::{GameClock, SPEED_RATES};
+use crate::clock::GameClock;
 use crate::loading::CurrentWorld;
 use crate::objects::{AssetCtx, ObjectAssets, spawn_parts};
 use crate::{AppState, PlayMode};
@@ -16,7 +16,7 @@ pub struct TrafficPlugin;
 
 impl Plugin for TrafficPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<PendingRides>().add_systems(Update, (rides, traffic).chain().run_if(in_state(PlayMode::Live)));
+        app.init_resource::<PendingRides>().add_systems(Update, (rides, traffic).chain().run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay));
     }
 }
 
@@ -227,6 +227,7 @@ fn rides(
 
 #[allow(clippy::too_many_arguments)]
 fn traffic(
+    delta: Res<crate::clock::SimDelta>,
     mut commands: Commands,
     time: Res<Time>,
     clock: Res<GameClock>,
@@ -246,7 +247,7 @@ fn traffic(
     let Ok(cam) = cams.single() else { return };
     let focus = cam.focus.xz();
     let mut rng = rand::rng();
-    let dt = time.delta_secs().min(0.1) * SPEED_RATES[clock.speed].min(4.0);
+    let dt = delta.capped(crate::clock::SPEED_RATES[clock.speed], 4.0);
     let hm = &world.data.heightmap;
     let mut count = 0;
     // Rides pull up at the curb (the household's own car too).

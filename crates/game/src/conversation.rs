@@ -443,6 +443,9 @@ pub fn intended(social: usize) -> Commodity {
 /// A name with spaces and case aside (the tables write "Insufferably tedious" for
 /// InsufferablyTedious).
 fn norm(s: &str) -> String {
+    if s.is_ascii() {
+        return s.bytes().filter(u8::is_ascii_alphanumeric).map(|c| c.to_ascii_lowercase() as char).collect();
+    }
     s.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
 }
 
@@ -831,6 +834,18 @@ pub fn relationship_state(liking: f32, status: crate::social::RelStatus, romanti
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalized_keys_keep_ascii_and_unicode_behavior() {
+        let previous = |s: &str| s.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect::<String>();
+        for byte in 0u8..=127 {
+            let s = String::from_utf8(vec![byte]).unwrap();
+            assert_eq!(norm(&s), previous(&s));
+        }
+        for s in ["Insufferably tedious", "Friendly_All", "~123", "", "Straße", "İSTANBUL", "Привет"] {
+            assert_eq!(norm(s), previous(s));
+        }
+    }
 
     #[test]
     fn contexts_move_as_the_games() {

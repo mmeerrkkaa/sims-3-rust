@@ -115,6 +115,7 @@ fn update_panel(
     (mut portraits, mut images): (ResMut<crate::portraits::Portraits>, ResMut<Assets<Image>>),
     family: Res<crate::family::Genealogy>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Relations);
     if !panel.open {
         return;
     }
@@ -247,6 +248,7 @@ fn update_tree(
     family: Res<crate::family::Genealogy>,
     (mut portraits, mut images): (ResMut<crate::portraits::Portraits>, ResMut<Assets<Image>>),
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::FamilyTree);
     if panel.with_tree && panel.open {
         panel.with_tree = false;
         panel.tree = true;

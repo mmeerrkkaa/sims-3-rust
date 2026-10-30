@@ -22,7 +22,7 @@ pub struct DeathPlugin;
 
 impl Plugin for DeathPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (shocks, starve, reap).run_if(in_state(PlayMode::Live)));
+        app.add_systems(Update, (shocks, starve, reap).run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay));
     }
 }
 
@@ -138,7 +138,7 @@ const LEAVE_AT: f32 = 12.0;
 #[allow(clippy::type_complexity)]
 fn reap(
     mut commands: Commands,
-    time: Res<Time>,
+    delta: Res<crate::clock::SimDelta>,
     clock: Res<crate::clock::GameClock>,
     mut dying: Query<(Entity, &Sim, &mut Dying, &Transform, Option<&mut ActionQueue>, Has<Selected>, Option<&crate::nav::Floor>, (Option<&mut crate::inventory::Inventory>, Option<&mut crate::sim::Motives>))>,
     survivors: Query<Entity, (With<crate::sim::HouseholdMember>, Without<Dying>)>,
@@ -150,7 +150,7 @@ fn reap(
     if clock.speed == 0 {
         return;
     }
-    let dt = time.delta_secs() * (clock.speed as f32).min(2.0);
+    let dt = delta.0 * (clock.speed as f32).min(2.0) / crate::clock::SPEED_RATES[clock.speed].max(1.0);
     for (me, sim, mut d, tf, queue, selected, floor, (inv, motives)) in &mut dying {
         d.t += dt;
         // A Death Flower carried: the Reaper takes it in their stead, and goes.

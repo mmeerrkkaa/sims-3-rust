@@ -65,6 +65,7 @@ fn disturb(
     visitors: Query<(Entity, &Transform, &ActionQueue, &Visibility), (With<Sim>, Without<HouseholdMember>)>,
     mut sims: Query<(Entity, &Sim, &Transform, &mut Moodlets, &mut ActionQueue, &Visibility), (With<HouseholdMember>, Without<crate::visit::OnLot>)>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra60);
     let now = time.elapsed_secs();
     if now - *last < 1.0 {
         return;

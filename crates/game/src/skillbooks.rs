@@ -12,7 +12,7 @@ pub struct SkillBooksPlugin;
 
 impl Plugin for SkillBooksPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (book_bought, read_on).run_if(in_state(PlayMode::Live)));
+        app.add_systems(Update, (book_bought, read_on).run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay));
     }
 }
 

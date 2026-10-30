@@ -282,6 +282,7 @@ fn balloon_triggers(
     requests: Query<(Entity, &BalloonRequest)>,
     objects: Query<&crate::interact::GameObject>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra26);
     let Some(mut ui) = ui else { return };
     let now = time.elapsed_secs();
     let data = ui.data.clone();
@@ -536,6 +537,7 @@ fn place_balloons(
     mut balloons: Query<(Entity, &BalloonUi, &mut Node)>,
     mut parts: Query<(&ChildOf, &mut ImageNode), With<BalloonPart>>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra27);
     let now = time.elapsed_secs();
     // (`hideHeadlineEffects on`: none.)
     if crate::cheats::hide_headlines() {
@@ -595,6 +597,7 @@ fn place_balloons(
 }
 
 fn clear_balloons(mut commands: Commands, balloons: Query<Entity, With<BalloonUi>>, mut state: ResMut<BalloonState>) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra28);
     for e in &balloons {
         commands.entity(e).try_despawn();
     }

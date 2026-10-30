@@ -16,7 +16,7 @@ impl Plugin for LifePlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<LifeEvent>().add_systems(
             Update,
-            (need_moodlets, need_failures, life_events, expire_and_sum.after(crate::weather::sim_temperatures)).chain().run_if(in_state(PlayMode::Live)),
+            (need_moodlets, need_failures, life_events, expire_and_sum.after(crate::weather::sim_temperatures)).chain().run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay),
         );
     }
 }
@@ -1375,6 +1375,7 @@ impl LifeEvent {
 }
 
 fn need_moodlets(mut q: Query<(&Motives, &Sim, &mut Moodlets)>) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::NeedMoodlets);
     for (m, sim, mut ml) in &mut q {
         let v = m.0;
         ml.set_need(MoodletKind::Starving, v[HUNGER] < -70.0);
@@ -1471,6 +1472,7 @@ fn life_events(
     mut events: MessageReader<LifeEvent>,
     mut q: Query<(&Sim, &Motives, &mut Moodlets, &Skills, Has<SoreLater>)>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::LifeEvents);
     let now = clock.minutes;
     for ev in events.read() {
         let Ok((sim, m, mut ml, skills, sore_later)) = q.get_mut(ev.sim) else { continue };
@@ -1567,6 +1569,7 @@ pub fn felt(value: i32, traits: &[Trait]) -> i32 {
 
 #[allow(clippy::type_complexity)]
 fn expire_and_sum(clock: Res<GameClock>, delta: Res<SimDelta>, mut q: Query<(&mut Moodlets, &mut Mood, Option<&crate::wishes::Wishes>, Option<&crate::weather::BodyTemperature>, Option<&Sim>)>) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::MoodSum);
     for (mut ml, mut mood, wishes, temperature, sim) in &mut q {
         // (Each new one as their traits take it.)
         if let Some(sim) = sim
@@ -1611,7 +1614,7 @@ mod temperature_moodlet_tests {
         let mut app = App::new();
         app.init_resource::<GameClock>()
             .insert_resource(SimDelta(30.0))
-            .add_systems(Update, expire_and_sum);
+            .add_systems(Update, expire_and_sum.in_set(crate::clock::SimPhase::Gameplay));
         let start = app.world().resource::<GameClock>().minutes;
         let mut ml = Moodlets::default();
         ml.add(MoodletKind::Frostbitten, start);

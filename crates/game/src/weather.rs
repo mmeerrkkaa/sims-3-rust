@@ -22,7 +22,7 @@ impl Plugin for WeatherPlugin {
         app.init_resource::<Weather>()
             .add_message::<Thunder>()
             .add_plugins(crate::weather_fx::WeatherFxPlugin)
-            .add_systems(Update, (simulate, sim_temperatures).chain().after(crate::clock::advance_clock).after(crate::save::apply_loaded_game).run_if(in_state(PlayMode::Live)));
+            .add_systems(Update, (simulate, sim_temperatures).chain().after(crate::clock::advance_clock).after(crate::save::apply_loaded_game).run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay));
     }
 }
 
@@ -267,7 +267,7 @@ impl Weather {
 /// Whether a point is under a roof: in a room of the house (or of the lot being visited).
 pub fn sheltered(building: Option<&crate::building::ActiveBuilding>, p: Vec3) -> bool {
     let inside = |b: &crate::building::ActiveBuilding| b.room_at(b.level_at(p.y + 0.3), p).is_some_and(|k| k != s3bake::ROOM_OUTSIDE && k != s3bake::ROOM_PORCH);
-    building.is_some_and(|b| inside(b) || b.away.as_deref().is_some_and(inside))
+    building.is_some_and(|b| inside(b) || b.away.values().any(inside))
 }
 
 /// A Sim's temperature (`SimTemperature`, -100 freezing .. 100 baking; 0 comfortable), and how
@@ -646,7 +646,7 @@ mod tests {
         app.init_resource::<GameClock>()
             .insert_resource(crate::clock::SimDelta(60.0))
             .insert_resource(Weather { temperature: 0.0, ..default() })
-            .add_systems(Update, sim_temperatures);
+            .add_systems(Update, sim_temperatures.in_set(crate::clock::SimPhase::Gameplay));
         let mut rng = rand::rng();
         // (No trait that takes the cold better or worse.)
         let mut plain = || {
@@ -686,7 +686,7 @@ mod tests {
         app.init_resource::<GameClock>()
             .insert_resource(crate::clock::SimDelta(60.0))
             .insert_resource(Weather { temperature: 0.0, ..default() })
-            .add_systems(Update, sim_temperatures);
+            .add_systems(Update, sim_temperatures.in_set(crate::clock::SimPhase::Gameplay));
         let mut rng = rand::rng();
         let mut spawn = |reward: &str| {
             let mut moodlets = Moodlets::default();

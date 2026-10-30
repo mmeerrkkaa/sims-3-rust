@@ -441,10 +441,11 @@ fn puck(
     world: Res<crate::loading::CurrentWorld>,
     (buy_hud, build_hud): (Option<Res<crate::buyhud::BuyHud>>, Option<Res<crate::buildhud::BuildHud>>),
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::HudPuck);
     // (Buy mode's layout has its own copy of the puck, worked the same.)
-    let buy_puck = buy_hud.map(|b| b.puck.clone());
-    let build_puck = build_hud.map(|b| b.puck.clone());
-    for p in std::iter::once(&hud.puck).chain(buy_puck.as_ref()).chain(build_puck.as_ref()) {
+    let buy_puck = buy_hud.as_deref().map(|b| &b.puck);
+    let build_puck = build_hud.as_deref().map(|b| &b.puck);
+    for p in std::iter::once(&hud.puck).chain(buy_puck).chain(build_puck) {
         puck_one(p, &mut commands, &clicks, &mut buttons, &mut texts, &mut vis, (household.as_deref(), &mut buy, &mut clock), (&mut walls, building.as_mut(), &mut cam), (&mut menu, &selected), &world);
     }
 }
@@ -639,6 +640,7 @@ fn motives_panel(
     (ui, mut tips): (Option<Res<UiAssets>>, Query<&mut crate::icons::Tooltip>),
     mut tipped: Local<bool>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::HudNeeds);
     let Ok(m) = sel.single() else { return };
     let s = &hud.motives;
     if !*tipped && let Some(ui) = ui.as_deref() {
@@ -789,6 +791,7 @@ fn skewer(
     (mouse, hovered, mut tips, mut queues, ui): (Res<ButtonInput<MouseButton>>, Query<&Interaction>, Query<&mut crate::icons::Tooltip>, Query<&mut crate::interact::ActionQueue>, Option<Res<UiAssets>>),
     (pets, mut nodes, mut pet_faces, gu): (Query<(Entity, &crate::pets::Pet, &crate::petneeds::PetMotives, &Transform, (Option<&crate::pets::PetTraits>, Option<&crate::dogtricks::DogTricks>)), With<crate::pets::HomePet>>, Query<&mut Node>, Local<Vec<Option<Entity>>>, Option<Res<crate::icons::GameUi>>),
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::HudPortraits);
     let s = &hud.skewer;
     let out: Vec<Entity> = members.iter().filter(|m| m.3).map(|m| m.0).collect();
     let mut list: Vec<(Entity, f32, bool)> = members.iter().map(|(e, m, sel, _)| (e, m.0, sel)).collect();
@@ -1053,6 +1056,7 @@ fn moodlets(
     mut vis: Query<&mut Visibility>,
     mut state: Local<(Option<Entity>, Vec<String>, u32, usize, bool)>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::HudMoodlets);
     let (Some(mut ui), Some(grid)) = (ui, hud.display.id(MOODLET_GRID)) else { return };
     let Some(g) = ui.layout("HUDSimDisplay").and_then(|w| w.find(MOODLET_GRID)).and_then(|w| w.grid) else { return };
     // (Theirs, with their name for the descriptions that have it: "Today is Bella's lucky day.")
@@ -1215,6 +1219,7 @@ fn wishes(
     mut selected: Local<Option<u64>>,
     (mouse, hovered, mut buttons): (Res<ButtonInput<MouseButton>>, Query<&Interaction>, Query<&mut UiButton>),
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::HudWishes);
     let Ok((sim, mut w, ltw)) = sel.single_mut() else { return };
     if selected.replace(sim.id) != Some(sim.id) { *page = 0; }
     let d = &hud.display;
@@ -1545,6 +1550,7 @@ fn interaction_queue(
         Local<std::collections::HashMap<Entity, usize>>,
     ),
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::HudQueue);
     let (Some(mut ui), Some(root)) = (ui, hud.queue.root) else { return };
     let Ok((me, mut queue, motives)) = sel.single_mut() else { return };
     // At work: the tone picked from the work item's combo box is how they work now (once it's
@@ -2175,6 +2181,7 @@ fn notifications(
     time: Res<Time>,
     mut icons: Option<ResMut<crate::icons::GameUi>>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::HudNotifications);
     let Some(mut ui) = ui else { return };
     let now = time.elapsed_secs();
     // New notices, under their tabs: shown a moment after (`AddShowDelayTask`), or, with the

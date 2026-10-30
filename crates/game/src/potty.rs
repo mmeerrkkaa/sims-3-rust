@@ -22,7 +22,7 @@ pub struct PottyPlugin;
 
 impl Plugin for PottyPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Potties>().add_systems(Update, (potties.after(crate::interact::run_actions), potty_test).run_if(in_state(PlayMode::Live)));
+        app.init_resource::<Potties>().add_systems(crate::clock::SimTick, (potties.after(crate::interact::run_actions), potty_test).run_if(in_state(PlayMode::Live)));
     }
 }
 

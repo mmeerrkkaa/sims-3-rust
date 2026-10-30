@@ -167,7 +167,7 @@ pub struct ActiveBuilding {
     /// town's): its pieces and railings.
     pub stair_style: Option<StairBaked>,
     /// The building of the community lot the household is out at (for its floors).
-    pub away: Option<Box<ActiveBuilding>>,
+    pub away: std::collections::BTreeMap<usize, ActiveBuilding>,
 }
 
 impl ActiveBuilding {
@@ -399,7 +399,7 @@ impl ActiveBuilding {
 /// Height a Sim stands at: the house's ground floor when inside it, else the terrain.
 pub fn walk_height(world: &WorldInfo, building: Option<&ActiveBuilding>, p: Vec3) -> f32 {
     building
-        .and_then(|b| b.floor_y(1, p).or_else(|| b.away.as_ref().and_then(|a| a.floor_y(1, p))))
+        .and_then(|b| b.floor_y(1, p).or_else(|| b.away.values().find_map(|a| a.floor_y(1, p))))
         .unwrap_or_else(|| world.heightmap.sample(p.x, p.z))
 }
 
@@ -901,27 +901,28 @@ pub struct PieceLevel(pub u8);
 /// On a visit, the floors above the one the selected Sim is on (and what's on them) are hidden
 /// when the camera comes in close, as at home: a rooftop terrace shows under the roof above it.
 pub fn visit_floors(
-    visited: Option<Res<crate::visit::VisitedLot>>,
+    visited: Res<crate::visit::OpenLots>,
     cams: Query<&SimsCamera>,
     selected: Query<(&Floor, &crate::visit::OnLot), With<crate::sim::Selected>>,
     mut pieces: Query<(&PieceLevel, &ChildOf, &mut Visibility)>,
     mut objects: Query<(&crate::visit::LotObject, &Floor, &mut Visibility, Has<crate::props::InHand>), Without<PieceLevel>>,
 ) {
-    let Some(v) = visited else { return };
     let Ok(cam) = cams.single() else { return };
-    let here = selected.iter().find(|(_, o)| o.0 == v.lot).map(|(f, _)| f.0);
-    let top = match here {
-        Some(f) if cam.distance <= ROOF_DISTANCE => f,
-        _ => u8::MAX,
-    };
-    for (l, parent, mut vis) in &mut pieces {
-        if parent.parent() == v.root() {
-            vis.set_if_neq(if l.0 > top { Visibility::Hidden } else { Visibility::Inherited });
+    for v in visited.0.values() {
+        let here = selected.iter().find(|(_, o)| o.0 == v.lot).map(|(f, _)| f.0);
+        let top = match here {
+            Some(f) if cam.distance <= ROOF_DISTANCE => f,
+            _ => u8::MAX,
+        };
+        for (l, parent, mut vis) in &mut pieces {
+            if parent.parent() == v.root() {
+                vis.set_if_neq(if l.0 > top { Visibility::Hidden } else { Visibility::Inherited });
+            }
         }
-    }
-    for (o, f, mut vis, in_hand) in &mut objects {
-        if o.0 == v.lot {
-            vis.set_if_neq(if f.0 > top || in_hand { Visibility::Hidden } else { Visibility::Inherited });
+        for (o, f, mut vis, in_hand) in &mut objects {
+            if o.0 == v.lot {
+                vis.set_if_neq(if f.0 > top || in_hand { Visibility::Hidden } else { Visibility::Inherited });
+            }
         }
     }
 }
@@ -3317,7 +3318,7 @@ pub fn spawn_building(
         foundation_cover: None,
         pool_curves: Vec::new(),
         stair_style: b.stairs.iter().find(|s| s.flight.is_some()).cloned(),
-        away: None,
+        away: Default::default(),
         wall_entities: HashMap::new(),
         floor_entities: Vec::new(),
         stair_entities: Vec::new(),
@@ -3665,7 +3666,7 @@ fn camera_to_floor(
         if over(b) {
             Some(b.levels.get(b.view_level as usize).copied().unwrap_or(ground) - ground)
         } else {
-            let a = b.away.as_deref().filter(|a| over(a))?;
+            let a = b.away.values().find(|a| over(a))?;
             let level = selected.iter().next().map_or(1, |f| f.0);
             Some(a.levels.get(level as usize).copied().unwrap_or(ground) - ground)
         }
@@ -3716,6 +3717,7 @@ fn view_level_keys(keys: Res<ButtonInput<KeyCode>>, building: Option<ResMut<Acti
 pub struct Shell;
 
 fn shell_visibility(walls: Res<WallMode>, cams: Query<&SimsCamera>, mut shells: Query<(&GlobalTransform, &mut Visibility), With<Shell>>) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::ShellVisibility);
     let Ok(cam) = cams.single() else { return };
     for (tf, mut vis) in &mut shells {
         let close = cam.distance <= ROOF_DISTANCE && cam.focus.xz().distance(tf.translation().xz()) < 40.0;
@@ -3753,6 +3755,7 @@ fn building_visibility(
         ),
     >,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::BuildingVisibility);
     let Some(mut b) = building else { return };
     let Ok((cam, cam_tf)) = cams.single() else { return };
     let far = !b.always_detailed && (cam.distance > IMPOSTER_DISTANCE || cam.focus.distance(b.center) > IMPOSTER_DISTANCE * 1.4);
@@ -4031,12 +4034,13 @@ fn stream_nearby_lots(
     active: Option<Res<ActiveBuilding>>,
     imposters: Query<(Entity, &LotImposter)>,
     mut layers: Query<(&ImposterLayer, &ChildOf, &mut Visibility)>,
-    visited: Option<Res<crate::visit::VisitedLot>>,
+    visited: Res<crate::visit::OpenLots>,
     dormant: Res<crate::household::Dormant>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::StreamLots);
     let Ok(cam) = cams.single() else { return };
     let active_lot = active.as_ref().map(|a| a.lot);
-    let visited_lot = visited.as_ref().map(|v| v.lot);
+
     let zoomed_in = cam.distance < IMPOSTER_DISTANCE;
     let (near_in, near_out) = nearby_radius(cam.distance);
     // (NEARBY_MAX=<n>: a test's own cap, to weigh what the detailed street costs.)
@@ -4048,7 +4052,7 @@ fn stream_nearby_lots(
     let gone: Vec<usize> = by_distance
         .iter()
         .enumerate()
-        .filter(|(n, (i, d))| !zoomed_in || Some(*i) == active_lot || Some(*i) == visited_lot || *d > near_out || *n >= most)
+        .filter(|(n, (i, d))| !zoomed_in || Some(*i) == active_lot || visited.0.contains_key(i) || *d > near_out || *n >= most)
         .map(|(_, (i, _))| *i)
         .collect();
     for i in gone {
@@ -4066,7 +4070,7 @@ fn stream_nearby_lots(
             .keys()
             .copied()
             .chain(dormant.0.iter().filter(|d| !d.homeless).map(|d| d.lot_index))
-            .filter(|i| *i < world.data.lots.len() && Some(*i) != active_lot && Some(*i) != visited_lot && !nearby.spawned.contains_key(i))
+            .filter(|i| *i < world.data.lots.len() && Some(*i) != active_lot && !visited.0.contains_key(i) && !nearby.spawned.contains_key(i))
             .map(|i| (i, lot_center(i).xz().distance(cam.focus.xz())))
             .filter(|(_, d)| *d < near_in)
             .min_by(|a, b| a.1.total_cmp(&b.1));
@@ -4088,9 +4092,9 @@ fn stream_nearby_lots(
     let active_far = active.as_ref().is_none_or(|a| a.far != Some(false));
     for (layer, parent, mut vis) in &mut layers {
         let Some(&lot) = lot_of.get(&parent.parent()) else { continue };
-        let detailed = nearby.spawned.contains_key(&lot) || (Some(lot) == active_lot && !active_far) || Some(lot) == visited_lot;
+        let detailed = nearby.spawned.contains_key(&lot) || (Some(lot) == active_lot && !active_far) || visited.0.contains_key(&lot);
         let show = (!detailed && layer.0 != LAYER_GROUND)
-            || (layer.0 == LAYER_ROOF && ((Some(lot) != active_lot && Some(lot) != visited_lot) || cam.distance > ROOF_DISTANCE));
+            || (layer.0 == LAYER_ROOF && ((Some(lot) != active_lot && !visited.0.contains_key(&lot)) || cam.distance > ROOF_DISTANCE));
         vis.set_if_neq(if show { Visibility::Inherited } else { Visibility::Hidden });
     }
 }

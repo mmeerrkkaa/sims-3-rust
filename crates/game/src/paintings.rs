@@ -26,7 +26,7 @@ pub struct PaintingsPlugin;
 
 impl Plugin for PaintingsPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<PaintingImages>().add_systems(Update, easel_canvases.before(crate::interact::run_actions).run_if(in_state(crate::PlayMode::Live)));
+        app.init_resource::<PaintingImages>().add_systems(crate::clock::SimTick, easel_canvases.before(crate::interact::run_actions).run_if(in_state(crate::PlayMode::Live)));
     }
 }
 

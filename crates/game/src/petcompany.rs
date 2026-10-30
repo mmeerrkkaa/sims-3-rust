@@ -21,7 +21,7 @@ use rand::Rng;
 use crate::PlayMode;
 use crate::anim::{ActionClip, ClipLibrary};
 use crate::baked::Baked;
-use crate::clock::{GameClock, SPEED_RATES};
+use crate::clock::GameClock;
 use crate::interact::{Action, ActionKind, ActionQueue};
 use crate::petneeds::{FUN, PetMotives, SOCIAL};
 use crate::pets::{HomePet, Pet, PetAnim, PetBonds, PetBusy};
@@ -31,7 +31,7 @@ pub struct PetCompanyPlugin;
 
 impl Plugin for PetCompanyPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (seek_company, greet).chain().run_if(in_state(PlayMode::Live)));
+        app.add_systems(Update, (seek_company, greet).chain().run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay));
     }
 }
 
@@ -295,8 +295,8 @@ fn seek_company(
 /// what comes of it once it's over.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn greet(
+    delta: Res<crate::clock::SimDelta>,
     mut commands: Commands,
-    time: Res<Time>,
     clock: Res<GameClock>,
     data: Res<Baked>,
     mut lib: ResMut<ClipLibrary>,
@@ -307,7 +307,7 @@ fn greet(
     mut sims: Query<(&Sim, &Transform, &mut ActionQueue, Option<&crate::nav::PathFollow>, &mut crate::sim::Motives), (With<HouseholdMember>, Without<Pet>)>,
     greeted: Query<(Entity, &Greeted)>,
 ) {
-    let dt = time.delta_secs().min(0.1) * SPEED_RATES[clock.speed].min(3.0);
+    let dt = delta.capped(crate::clock::SPEED_RATES[clock.speed], 3.0);
     let now = clock.minutes;
     let mut rng = rand::rng();
     let leaders: Vec<Entity> = pets.iter().filter(|p| p.4.is_some()).map(|p| p.0).collect();

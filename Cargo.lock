@@ -4742,6 +4742,14 @@ name = "s3pkg"
 version = "0.1.0"
 
 [[package]]
+name = "s3sim"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "s3tool"
 version = "0.1.0"
 dependencies = [
@@ -4890,6 +4898,7 @@ dependencies = [
  "s3bake",
  "s3formats",
  "s3pkg",
+ "s3sim",
  "serde",
  "serde_json",
 ]

@@ -144,8 +144,9 @@ fn edge(at: f32, size: f32) -> f32 {
     }
 }
 
-fn camera_control(
+pub(crate) fn camera_control(
     time: Res<Time>,
+    args: Res<crate::autotest::AutoArgs>,
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
     motion: Res<AccumulatedMouseMotion>,
@@ -160,81 +161,84 @@ fn camera_control(
     let Ok((mut cam, mut tf)) = q.single_mut() else { return };
     let dt = time.delta_secs();
 
-    // Zoom
-    let wheel = match scroll.unit {
-        MouseScrollUnit::Line => scroll.delta.y,
-        MouseScrollUnit::Pixel => scroll.delta.y / 40.0,
-    };
-    if wheel != 0.0 && !over_ui.is_some_and(|p| p.0) {
-        cam.distance = (cam.distance * (1.0 - wheel * 0.12)).clamp(3.0, 900.0);
-    }
-    if (keys.pressed(KeyCode::KeyZ) && !keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight])) || keys.pressed(KeyCode::Equal) {
-        cam.distance = (cam.distance * (1.0 - dt * 1.5)).max(3.0);
-    }
-    if keys.pressed(KeyCode::KeyX) || keys.pressed(KeyCode::Minus) {
-        cam.distance = (cam.distance * (1.0 + dt * 1.5)).min(900.0);
-    }
-
-    // Rotate
-    let dragging = mouse.pressed(MouseButton::Middle) || mouse.pressed(MouseButton::Right);
-    if dragging {
-        // (The other way round, with the options' Invert Camera Rotation.)
-        let (sx, sy) = (if settings.invert_h { -1.0 } else { 1.0 }, if settings.invert_v { -1.0 } else { 1.0 });
-        cam.yaw -= motion.delta.x * 0.005 * sx;
-        cam.pitch = (cam.pitch + motion.delta.y * 0.004 * sy).clamp(0.12, 1.5);
-    }
-    if keys.pressed(KeyCode::KeyQ) {
-        cam.yaw += dt * 1.6;
-    }
-    if keys.pressed(KeyCode::KeyE) && !buy.active {
-        cam.yaw -= dt * 1.6;
-    }
-    if keys.pressed(KeyCode::KeyT) {
-        cam.pitch = (cam.pitch + dt).min(1.5);
-    }
-    if keys.pressed(KeyCode::KeyG) {
-        cam.pitch = (cam.pitch - dt).max(0.12);
-    }
-
-    // Pan relative to view direction
-    let forward = Vec3::new(-cam.yaw.sin(), 0.0, -cam.yaw.cos());
-    let right = Vec3::new(cam.yaw.cos(), 0.0, -cam.yaw.sin());
-    let mut pan = Vec3::ZERO;
-    if keys.any_pressed([KeyCode::KeyW, KeyCode::ArrowUp]) {
-        pan += forward;
-    }
-    if keys.any_pressed([KeyCode::KeyS, KeyCode::ArrowDown]) {
-        pan -= forward;
-    }
-    if keys.any_pressed([KeyCode::KeyD, KeyCode::ArrowRight]) {
-        pan += right;
-    }
-    if keys.any_pressed([KeyCode::KeyA, KeyCode::ArrowLeft]) {
-        pan -= right;
-    }
-    // (With the options' Edge Scrolling, the pointer at the screen's edge moves the camera that
-    // way.)
-    if settings.edge_scroll
-        && !dragging
-        && let Ok(w) = windows.single()
-        && w.focused
-        && let Some(p) = w.cursor_position()
-    {
-        let (x, y) = (edge(p.x, w.width()), edge(p.y, w.height()));
-        pan += right * x - forward * y;
-    }
-    let speed = (cam.distance * 1.2).max(8.0) * if keys.pressed(KeyCode::ShiftLeft) { 3.0 } else { 1.0 };
-    let pan_delta = pan.normalize_or_zero() * speed * dt;
-    cam.focus += pan_delta;
-    // (Following a Sim: on them as they go, till the camera's panned away, or they're gone.)
-    if pan != Vec3::ZERO {
-        cam.follow = None;
-    }
-    if let Some(e) = cam.follow {
-        match followed.get(e) {
-            Ok(g) => cam.focus = g.translation(),
-            Err(_) => cam.follow = None,
+    if !args.bench {
+        // Zoom
+        let wheel = match scroll.unit {
+            MouseScrollUnit::Line => scroll.delta.y,
+            MouseScrollUnit::Pixel => scroll.delta.y / 40.0,
+        };
+        if wheel != 0.0 && !over_ui.is_some_and(|p| p.0) {
+            cam.distance = (cam.distance * (1.0 - wheel * 0.12)).clamp(3.0, 900.0);
         }
+        if (keys.pressed(KeyCode::KeyZ) && !keys.any_pressed([KeyCode::ControlLeft, KeyCode::ControlRight])) || keys.pressed(KeyCode::Equal) {
+            cam.distance = (cam.distance * (1.0 - dt * 1.5)).max(3.0);
+        }
+        if keys.pressed(KeyCode::KeyX) || keys.pressed(KeyCode::Minus) {
+            cam.distance = (cam.distance * (1.0 + dt * 1.5)).min(900.0);
+        }
+
+        // Rotate
+        let dragging = mouse.pressed(MouseButton::Middle) || mouse.pressed(MouseButton::Right);
+        if dragging {
+            // (The other way round, with the options' Invert Camera Rotation.)
+            let (sx, sy) = (if settings.invert_h { -1.0 } else { 1.0 }, if settings.invert_v { -1.0 } else { 1.0 });
+            cam.yaw -= motion.delta.x * 0.005 * sx;
+            cam.pitch = (cam.pitch + motion.delta.y * 0.004 * sy).clamp(0.12, 1.5);
+        }
+        if keys.pressed(KeyCode::KeyQ) {
+            cam.yaw += dt * 1.6;
+        }
+        if keys.pressed(KeyCode::KeyE) && !buy.active {
+            cam.yaw -= dt * 1.6;
+        }
+        if keys.pressed(KeyCode::KeyT) {
+            cam.pitch = (cam.pitch + dt).min(1.5);
+        }
+        if keys.pressed(KeyCode::KeyG) {
+            cam.pitch = (cam.pitch - dt).max(0.12);
+        }
+
+        // Pan relative to view direction
+        let forward = Vec3::new(-cam.yaw.sin(), 0.0, -cam.yaw.cos());
+        let right = Vec3::new(cam.yaw.cos(), 0.0, -cam.yaw.sin());
+        let mut pan = Vec3::ZERO;
+        if keys.any_pressed([KeyCode::KeyW, KeyCode::ArrowUp]) {
+            pan += forward;
+        }
+        if keys.any_pressed([KeyCode::KeyS, KeyCode::ArrowDown]) {
+            pan -= forward;
+        }
+        if keys.any_pressed([KeyCode::KeyD, KeyCode::ArrowRight]) {
+            pan += right;
+        }
+        if keys.any_pressed([KeyCode::KeyA, KeyCode::ArrowLeft]) {
+            pan -= right;
+        }
+        // (With the options' Edge Scrolling, the pointer at the screen's edge moves the camera that
+        // way.)
+        if settings.edge_scroll
+            && !dragging
+            && let Ok(w) = windows.single()
+            && w.focused
+            && let Some(p) = w.cursor_position()
+        {
+            let (x, y) = (edge(p.x, w.width()), edge(p.y, w.height()));
+            pan += right * x - forward * y;
+        }
+        let speed = (cam.distance * 1.2).max(8.0) * if keys.pressed(KeyCode::ShiftLeft) { 3.0 } else { 1.0 };
+        let pan_delta = pan.normalize_or_zero() * speed * dt;
+        cam.focus += pan_delta;
+        // (Following a Sim: on them as they go, till the camera's panned away, or they're gone.)
+        if pan != Vec3::ZERO {
+            cam.follow = None;
+        }
+        if let Some(e) = cam.follow {
+            match followed.get(e) {
+                Ok(g) => cam.focus = g.translation(),
+                Err(_) => cam.follow = None,
+            }
+        }
+
     }
 
     let hm = &world.data.heightmap;

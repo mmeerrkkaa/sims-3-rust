@@ -17,7 +17,7 @@ pub struct WishesPlugin;
 
 impl Plugin for WishesPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (offer_wishes, mood_happiness, fulfil_wishes, buy_rewards).chain().after(crate::save::apply_loaded_game).run_if(in_state(PlayMode::Live)));
+        app.add_systems(Update, (offer_wishes, mood_happiness, fulfil_wishes, buy_rewards).chain().after(crate::save::apply_loaded_game).run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay));
     }
 }
 
@@ -229,7 +229,7 @@ mod mood_happiness_tests {
     #[test]
     fn passive_happiness_only_accrues_for_living_household_sims_while_time_runs() {
         let mut app = App::new();
-        app.insert_resource(crate::clock::SimDelta(60.0)).add_systems(Update, mood_happiness);
+        app.insert_resource(crate::clock::SimDelta(60.0)).add_systems(Update, mood_happiness.in_set(crate::clock::SimPhase::Gameplay));
         let active = app.world_mut().spawn((HouseholdMember, crate::life::Mood(100.0), Wishes::default())).id();
         let visitor = app.world_mut().spawn((crate::life::Mood(100.0), Wishes::default())).id();
         let dying = app.world_mut().spawn((HouseholdMember, crate::life::Mood(100.0), Wishes::default(), crate::death::Dying::new())).id();
@@ -594,7 +594,7 @@ mod tests {
     fn make_friend_requires_a_new_friendship_not_chatting_with_existing_friends() {
         let mut app = App::new();
         app.init_resource::<GameClock>().init_resource::<Notifications>()
-            .add_message::<LifeEvent>().add_systems(Update, fulfil_wishes);
+            .add_message::<LifeEvent>().add_systems(Update, fulfil_wishes.in_set(crate::clock::SimPhase::Gameplay));
         let mut rng = <rand::rngs::StdRng as rand::SeedableRng>::seed_from_u64(92);
         let mut sim = crate::sim::random_sim(&mut rng, "Friend", Some(false), Age::Adult);
         sim.traits.clear();
@@ -641,7 +641,7 @@ mod tests {
     fn only_completed_promised_wishes_award_happiness() {
         let mut app = App::new();
         app.init_resource::<GameClock>().init_resource::<Notifications>()
-            .add_message::<LifeEvent>().add_systems(Update, fulfil_wishes);
+            .add_message::<LifeEvent>().add_systems(Update, fulfil_wishes.in_set(crate::clock::SimPhase::Gameplay));
         let mut rng = <rand::rngs::StdRng as rand::SeedableRng>::seed_from_u64(91);
         let mut sim = crate::sim::random_sim(&mut rng, "Promise", Some(false), Age::Adult);
         sim.traits = vec![Trait::Ambitious];
@@ -678,7 +678,7 @@ mod tests {
         assert_eq!(restored, original);
         let mut app = App::new();
         app.init_resource::<GameClock>().init_resource::<Notifications>()
-            .add_message::<LifeEvent>().add_systems(Update, fulfil_wishes);
+            .add_message::<LifeEvent>().add_systems(Update, fulfil_wishes.in_set(crate::clock::SimPhase::Gameplay));
         let mut rng = <rand::rngs::StdRng as rand::SeedableRng>::seed_from_u64(90);
         let mut sim = crate::sim::random_sim(&mut rng, "Wishes", Some(false), Age::Adult);
         sim.traits.clear();

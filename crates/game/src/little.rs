@@ -90,11 +90,11 @@ pub struct LittlePlugin;
 impl Plugin for LittlePlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<Lesson>()
-            .add_systems(Update, (lessons, crawl_speed).run_if(in_state(PlayMode::Live)))
+            .add_systems(Update, (lessons, crawl_speed).run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay))
             .add_message::<Conceive>()
             .init_resource::<NewbornPicks>()
-            .add_systems(Update, (conceive, pregnancy, name_babies, newborn_traits_picker, little_life, put_down).chain().run_if(in_state(PlayMode::Live)))
-            .add_systems(Update, kids_radio.run_if(in_state(PlayMode::Live)));
+            .add_systems(Update, (conceive, pregnancy, name_babies, newborn_traits_picker, little_life, put_down).chain().run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay))
+            .add_systems(Update, kids_radio.run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay));
     }
 }
 

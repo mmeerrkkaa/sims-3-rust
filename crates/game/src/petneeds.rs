@@ -25,7 +25,7 @@ use bevy::prelude::*;
 use rand::Rng;
 
 use crate::PlayMode;
-use crate::clock::{GameClock, SPEED_RATES};
+use crate::clock::GameClock;
 use crate::interact::{GameObject, ObjectKind};
 use crate::pets::{HomePet, Pet, PetAnim, PetBusy, PetTraits};
 
@@ -33,7 +33,7 @@ pub struct PetNeedsPlugin;
 
 impl Plugin for PetNeedsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (bowls, fall, attention, choose, act, filled, chores, thoughts, needs_test).chain().run_if(in_state(PlayMode::Live)));
+        app.add_systems(Update, (bowls, fall, attention, choose, act, filled, chores, thoughts, needs_test).chain().run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay));
     }
 }
 
@@ -300,8 +300,9 @@ struct PetThink(f64);
 
 /// Needs fall as the game's tuning has them; a pet asleep (curled up on the floor at night)
 /// rests.
-fn fall(time: Res<Time>, clock: Res<GameClock>, mut q: Query<(&Pet, &mut PetMotives, &PetAnim, Option<&PetTask>, Option<&PetTraits>)>) {
-    let hours = time.delta_secs().min(0.1) * SPEED_RATES[clock.speed] / 60.0;
+fn fall(
+    delta: Res<crate::clock::SimDelta>,mut q: Query<(&Pet, &mut PetMotives, &PetAnim, Option<&PetTask>, Option<&PetTraits>)>) {
+    let hours = delta.0 / 60.0;
     if hours <= 0.0 || crate::cheats::no_decay() {
         return;
     }
@@ -323,8 +324,9 @@ fn fall(time: Res<Time>, clock: Res<GameClock>, mut q: Query<(&Pet, &mut PetMoti
 const TUG_ENERGY: f32 = -200.0;
 
 /// A Sim's time with a pet (petting, praise, a hug, a treat): company and fun for the pet too.
-fn attention(time: Res<Time>, clock: Res<GameClock>, sims: Query<&crate::interact::ActionQueue>, mut pets: Query<(&mut PetMotives, Option<&PetTraits>)>) {
-    let hours = time.delta_secs().min(0.1) * SPEED_RATES[clock.speed] / 60.0;
+fn attention(
+    delta: Res<crate::clock::SimDelta>,sims: Query<&crate::interact::ActionQueue>, mut pets: Query<(&mut PetMotives, Option<&PetTraits>)>) {
+    let hours = delta.0 / 60.0;
     for q in &sims {
         let Some(a) = q.0.front() else { continue };
         let (crate::interact::ActionKind::PetSocial { target, social, .. }, crate::interact::Phase::Running(_)) = (&a.kind, a.phase) else { continue };
@@ -529,8 +531,8 @@ fn clip_for(kind: &str, what: PetDo, step: u32, traits: &[String], roll: f64) ->
 /// for each use, a puddle where a pet pees on a floor.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn act(
+    delta: Res<crate::clock::SimDelta>,
     mut commands: Commands,
-    time: Res<Time>,
     clock: Res<GameClock>,
     world: Res<crate::loading::CurrentWorld>,
     building: Option<Res<crate::building::ActiveBuilding>>,
@@ -538,8 +540,8 @@ fn act(
     mut objects: Query<(&GameObject, &Transform, Option<&mut BowlFood>, Option<&mut crate::grime::Grime>), Without<Pet>>,
     mut puddles: MessageWriter<crate::puddles::AddPuddle>,
 ) {
-    let dt = time.delta_secs().min(0.1) * SPEED_RATES[clock.speed].min(3.0);
-    let hours = time.delta_secs().min(0.1) * SPEED_RATES[clock.speed] / 60.0;
+    let dt = delta.capped(crate::clock::SPEED_RATES[clock.speed], 3.0);
+    let hours = delta.0 / 60.0;
     let now = clock.minutes;
     let mut rng = rand::rng();
     for (e, pet, mut task, mut m, mut tf, mut anim, traits) in &mut pets {

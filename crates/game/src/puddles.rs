@@ -28,6 +28,7 @@ impl Plugin for PuddlesPlugin {
 
 /// PUDDLE_AT=<x>,<z>,<storey> (tests): a puddle spilled there (world metres) a few seconds in.
 fn puddle_test(mut done: Local<bool>, time: Res<Time>, world: Res<crate::loading::CurrentWorld>, mut add: MessageWriter<AddPuddle>) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra91);
     let Ok(v) = std::env::var("PUDDLE_AT") else { return };
     if *done || time.elapsed_secs() < 8.0 {
         return;
@@ -83,6 +84,7 @@ fn spill(
     puddles: Query<(), With<Puddle>>,
     mut add: MessageWriter<AddPuddle>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra92);
     for (e, o, tf, floor, broken, spilling) in &mut fixtures {
         if !spills(o.kind) {
             continue;
@@ -185,6 +187,7 @@ fn add_puddles(
     mut looks: Local<Looks>,
     puddles: Query<(&Transform, &Floor), With<Puddle>>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra93);
     let mut placed: Vec<(Vec2, u8)> = puddles.iter().map(|(tf, f)| (tf.translation.xz(), f.0)).collect();
     let mut rng = rand::rng();
     for ask in asked.read() {
@@ -257,6 +260,7 @@ fn add_puddles(
 
 /// Puddles dry up in time (not while they're being mopped).
 fn dry_up(mut commands: Commands, clock: Res<GameClock>, puddles: Query<(Entity, &Puddle, &UsedBy)>) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra94);
     for (e, p, used) in &puddles {
         if clock.minutes >= p.until && used.0.is_none() {
             commands.entity(e).try_despawn();
@@ -277,6 +281,7 @@ pub struct SavedPuddle {
 pub struct PendingPuddles(pub Vec<SavedPuddle>);
 
 fn restore(mut pending: ResMut<PendingPuddles>, grid: Option<Res<crate::nav::NavGrid>>, upper: Option<Res<crate::nav::UpperFloors>>, mut add: MessageWriter<AddPuddle>) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra95);
     if pending.0.is_empty() || grid.is_none() || upper.as_deref().is_none_or(|u| !u.ready()) {
         return;
     }
@@ -286,5 +291,6 @@ fn restore(mut pending: ResMut<PendingPuddles>, grid: Option<Res<crate::nav::Nav
 }
 
 pub fn saved(clock: &GameClock, puddles: &Query<(&Transform, &Floor, &Puddle)>) -> Vec<SavedPuddle> {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra96);
     puddles.iter().map(|(tf, f, p)| SavedPuddle { at: tf.translation.to_array(), level: f.0, left: (p.until - clock.minutes).max(1.0) }).collect()
 }

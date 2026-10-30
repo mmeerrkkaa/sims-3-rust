@@ -90,9 +90,16 @@ struct Precipitation(Handle<PrecipMaterial>);
 const DROPS: usize = 9000;
 
 /// Each tile stores the highest shelter ceiling for its four floor triangles.
-/// The two array layers are the home and visited lots, each in its own local space.
-fn shelter_map(building: Option<&crate::building::ActiveBuilding>) -> (Image, Mat4, Mat4, Vec4) {
-    let lots = [building, building.and_then(|b| b.away.as_deref())];
+/// The two visual shelter layers follow the nearest detailed lots to the camera.
+/// CPU weather and simulation consider every open lot independently.
+fn shelter_lots(building: Option<&crate::building::ActiveBuilding>, focus: Vec3) -> [Option<&crate::building::ActiveBuilding>; 2] {
+    let mut lots: Vec<_> = building.into_iter().flat_map(|b| std::iter::once(b).chain(b.away.values())).collect();
+    lots.sort_by(|a, b| a.center.xz().distance_squared(focus.xz()).total_cmp(&b.center.xz().distance_squared(focus.xz())).then(a.lot.cmp(&b.lot)));
+    [lots.first().copied(), lots.get(1).copied()]
+}
+
+fn shelter_map(building: Option<&crate::building::ActiveBuilding>, focus: Vec3) -> (Image, Mat4, Mat4, Vec4) {
+    let lots = shelter_lots(building, focus);
     let width = lots.iter().flatten().map(|b| b.data.width).max().unwrap_or(1).max(1);
     let depth = lots.iter().flatten().map(|b| b.data.depth).max().unwrap_or(1).max(1);
     let mut pixels = vec![[-1.0e6f32; 4]; (width * depth * 2) as usize];
@@ -121,13 +128,13 @@ fn shelter_map(building: Option<&crate::building::ActiveBuilding>) -> (Image, Ma
 }
 
 /// PRECIP_SHELTER_TEST=1 audits the uploaded mask against the live room queries.
-fn verify_shelter(image: &Image, b: &crate::building::ActiveBuilding, params: PrecipParams) {
+fn verify_shelter(image: &Image, b: &crate::building::ActiveBuilding, focus: Vec3, params: PrecipParams) {
     let bytes = image.data.as_ref().expect("CPU shelter texture retained");
     let width = image.texture_descriptor.size.width as usize;
     let depth = image.texture_descriptor.size.height as usize;
     let mut indoors = 0;
     let mut outdoors = 0;
-    for (layer, lot) in [Some(b), b.away.as_deref()].into_iter().enumerate() {
+    for (layer, lot) in shelter_lots(Some(b), focus).into_iter().enumerate() {
         let Some(lot) = lot else { continue };
         let transform = if layer == 0 { params.home_to_local } else { params.away_to_local };
         for z in 0..lot.data.depth {
@@ -155,7 +162,7 @@ fn verify_shelter(image: &Image, b: &crate::building::ActiveBuilding, params: Pr
         }
     }
     assert!(indoors > 0 && outdoors > 0);
-    info!("precipitation shelter PASS: {indoors} indoor and {outdoors} outdoor triangles, rotated lot coordinates checked; home={}, visited={:?}", b.lot, b.away.as_ref().map(|a| a.lot));
+    info!("precipitation shelter PASS: {indoors} indoor and {outdoors} outdoor triangles, rotated lot coordinates checked; home={}, visited={:?}", b.lot, shelter_lots(Some(b), focus)[1].map(|a| a.lot));
 }
 
 fn drop_mesh() -> Mesh {
@@ -192,11 +199,15 @@ fn precipitation(
     mut mats: ResMut<Assets<PrecipMaterial>>,
     mut images: ResMut<Assets<Image>>,
     building: Option<Res<crate::building::ActiveBuilding>>,
-    mut verified: Local<Option<(usize, Option<usize>)>>,
+    mut verified: Local<Option<[Option<usize>; 2]>>,
+    mut mask_lots: Local<[Option<usize>; 2]>,
 ) {
     let (Some(clock), Some(w)) = (clock, weather) else { return };
+    let Ok(cam) = cams.single() else { return };
+    let focus = cam.focus;
+    let lots = shelter_lots(building.as_deref(), focus).map(|b| b.map(|b| b.lot));
     let Ok((p, mut vis)) = fx.single_mut() else {
-        let (shelter, home_to_local, away_to_local, shelter_size) = shelter_map(building.as_deref());
+        let (shelter, home_to_local, away_to_local, shelter_size) = shelter_map(building.as_deref(), focus);
         let mat = mats.add(PrecipMaterial {
             base: StandardMaterial { unlit: true, alpha_mode: AlphaMode::Blend, cull_mode: None, double_sided: true, fog_enabled: false, ..default() },
             extension: PrecipExt { precip: PrecipParams { home_to_local, away_to_local, shelter_size, ..default() }, shelter: images.add(shelter) },
@@ -214,11 +225,11 @@ fn precipitation(
         ));
         return;
     };
-    let Ok(cam) = cams.single() else { return };
     if let Some(mut m) = mats.get_mut(&p.0) {
         let missing = building.is_none() && m.extension.precip.shelter_size != Vec4::ZERO;
-        if missing || building.as_ref().is_some_and(|b| b.is_changed()) {
-            let (image, home, away, sizes) = shelter_map(building.as_deref());
+        if missing || *mask_lots != lots || building.as_ref().is_some_and(|b| b.is_changed()) {
+            *mask_lots = lots;
+            let (image, home, away, sizes) = shelter_map(building.as_deref(), focus);
             if let Some(mut existing) = images.get_mut(&m.extension.shelter) { *existing = image; }
             m.extension.precip.home_to_local = home;
             m.extension.precip.away_to_local = away;
@@ -226,12 +237,12 @@ fn precipitation(
         }
         if std::env::var_os("PRECIP_SHELTER_TEST").is_some()
             && let Some(b) = building.as_deref()
-            && *verified != Some((b.lot, b.away.as_ref().map(|a| a.lot)))
+            && *verified != Some(lots)
             && let Some(image) = images.get(&m.extension.shelter)
             && !b.data.floors.is_empty()
         {
-            verify_shelter(image, b, m.extension.precip);
-            *verified = Some((b.lot, b.away.as_ref().map(|a| a.lot)));
+            verify_shelter(image, b, focus, m.extension.precip);
+            *verified = Some(lots);
         }
     }
     let falling = w.falling(clock.minutes);

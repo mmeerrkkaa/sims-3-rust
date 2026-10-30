@@ -301,7 +301,7 @@ fn collectible_tags(
     tags: Query<(Entity, &CollectibleTag)>,
     ui: Option<ResMut<crate::icons::GameUi>>,
     mut images: ResMut<Assets<Image>>,
-    (world, visited): (Res<CurrentWorld>, Option<Res<crate::visit::VisitedLot>>),
+    (world, visited): (Res<CurrentWorld>, Res<crate::visit::OpenLots>),
     time: Res<Time>,
     mut last: Local<f32>,
 ) {
@@ -311,11 +311,10 @@ fn collectible_tags(
     }
     *last = time.elapsed_secs();
     let helper = objects.iter().any(|(_, o, _)| o.kind == ObjectKind::CollectionHelper);
-    let here = visited.as_ref().map(|v| v.lot);
     for (e, t) in &tags {
         let gone = match t {
             CollectibleTag::Find(f) => !objects.contains(*f),
-            CollectibleTag::Spawner(lot) => Some(*lot) == here,
+            CollectibleTag::Spawner(lot) => visited.0.contains_key(lot),
         };
         if !helper || gone {
             commands.entity(e).try_despawn();
@@ -332,7 +331,7 @@ fn collectible_tags(
         .collect();
     // Other lots: where their rock spawners leave gems, metals and space rocks.
     for (&lot, b) in &world.data.buildings {
-        if Some(lot) == here || tags.iter().any(|(_, t)| matches!(t, CollectibleTag::Spawner(l) if *l == lot)) {
+        if visited.0.contains_key(&lot) || tags.iter().any(|(_, t)| matches!(t, CollectibleTag::Spawner(l) if *l == lot)) {
             continue;
         }
         let spawners = b.objects.iter().filter(|o| {

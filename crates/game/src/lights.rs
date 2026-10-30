@@ -88,6 +88,7 @@ fn switch_lights(
     lamps: Query<(Entity, &Lamp, &GlobalTransform, Option<&LotObject>)>,
     building: Option<Res<ActiveBuilding>>,
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra64);
     for (e, a) in &asked {
         commands.entity(e).remove::<Asked>();
         // Where each is: its lot (none: home), and its room in the house there.
@@ -95,7 +96,7 @@ fn switch_lights(
             let lot = lot.map(|l| l.0);
             let b = building.as_deref().and_then(|b| match lot {
                 None => Some(b),
-                Some(l) => b.away.as_deref().filter(|a| a.lot == l),
+                Some(l) => b.away.get(&l),
             });
             (lot, b.and_then(|b| room(b, lamp, tf.translation())))
         };

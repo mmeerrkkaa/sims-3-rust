@@ -483,6 +483,7 @@ fn rebuild_bodies(
         ResMut<crate::simbody::SimTextures>,
     ),
 ) {
+    let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::RebuildBodies);
     let (Some(data), Some(cas)) = (data, cas) else { return };
     for (e, sim, children, wearing, job, service, wolf) in &sims {
         commands.entity(e).remove::<NeedsNewBody>();

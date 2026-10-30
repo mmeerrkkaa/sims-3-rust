@@ -30,7 +30,7 @@ pub struct DogTricksPlugin;
 
 impl Plugin for DogTricksPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (tricks_test, train, rest).chain().run_if(in_state(PlayMode::Live)));
+        app.add_systems(Update, (tricks_test, train, rest).chain().run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay));
     }
 }
 
@@ -231,13 +231,13 @@ fn part_name(trick: usize, part: Part) -> String {
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn train(
     mut commands: Commands,
-    (time, clock, delta): (Res<Time>, Res<crate::clock::GameClock>, Res<crate::clock::SimDelta>),
+    (clock, delta): (Res<crate::clock::GameClock>, Res<crate::clock::SimDelta>),
     (data, mut lib): (Res<Baked>, ResMut<ClipLibrary>),
     mut sims: Query<(Entity, &Sim, &mut ActionQueue, &mut Transform, Option<&mut TrickSession>), Without<Pet>>,
     mut dogs: Query<(&Pet, &mut Transform, &mut PetAnim, Option<&mut DogTricks>, Option<&mut PetBonds>, Option<&crate::pets::PetTraits>, Option<&crate::petneeds::PetMotives>), Without<Sim>>,
     mut notes: ResMut<Notifications>,
 ) {
-    let dt = time.delta_secs().min(0.1) * crate::clock::SPEED_RATES[clock.speed].min(3.0);
+    let dt = delta.capped(crate::clock::SPEED_RATES[clock.speed], 3.0);
     let minutes = delta.0;
     let mut rng = rand::rng();
     for (e, sim, mut queue, mut stf, session) in &mut sims {

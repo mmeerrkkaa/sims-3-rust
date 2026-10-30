@@ -27,7 +27,7 @@ impl Plugin for HouseholdPlugin {
                 commands.remove_resource::<CarryOver>();
                 commands.remove_resource::<Switching>();
             })
-            .add_systems(Update, (ask_which, chosen, switch_over, carry_over).run_if(in_state(crate::PlayMode::Live)));
+            .add_systems(Update, (ask_which, chosen, switch_over, carry_over.in_set(crate::clock::SimPhase::Restore)).run_if(in_state(crate::PlayMode::Live)));
     }
 }
 
@@ -93,6 +93,7 @@ pub struct Switching(pub Choice);
 #[derive(Resource, Clone)]
 pub struct CarryOver {
     pub minutes: f64,
+    pub timeline: s3sim::time::Timeline,
     pub town: crate::story::TownStory,
     pub family: Vec<crate::family::Person>,
     pub dormant: Vec<SaveGame>,
@@ -109,6 +110,7 @@ pub fn take_up(mut game: SaveGame, i: usize) -> Option<SaveGame> {
     let mut rest = std::mem::take(&mut game.dormant);
     let mut next = rest.remove(i);
     next.minutes = game.minutes;
+    next.timeline = game.timeline.clone();
     next.town = std::mem::take(&mut game.town);
     next.family = std::mem::take(&mut game.family);
     rest.push(game);
@@ -125,6 +127,7 @@ pub fn take_up(mut game: SaveGame, i: usize) -> Option<SaveGame> {
 pub fn move_in_town(mut game: SaveGame, newcomers: &[u64]) -> CarryOver {
     let mut dormant = std::mem::take(&mut game.dormant);
     let minutes = game.minutes;
+    let timeline = game.timeline.clone();
     let town = std::mem::take(&mut game.town);
     let family = std::mem::take(&mut game.family);
     dormant.push(game);
@@ -133,12 +136,12 @@ pub fn move_in_town(mut game: SaveGame, newcomers: &[u64]) -> CarryOver {
         .flat_map(|d| d.sims.iter().filter(|s| s.member && s.relationships.iter().any(|r| newcomers.contains(&r.with))))
         .map(known_as)
         .collect();
-    CarryOver { minutes, town, family, dormant, known }
+    CarryOver { minutes, timeline, town, family, dormant, known }
 }
 
 /// A Sim of another household, as one the household knows (living elsewhere, at home).
 fn known_as(s: &SavedSim) -> SavedSim {
-    SavedSim { member: false, selected: false, whereabouts: "away".into(), ..s.clone() }
+    SavedSim { member: false, selected: false, whereabouts: "away".into(), world_location: None, ..s.clone() }
 }
 
 /// The Sims of `other` (a household played before) that `game`'s household knows: kept in
@@ -339,6 +342,7 @@ fn carry_over(
     choice: Option<Res<crate::premade::PremadeChoice>>,
     household: Option<Res<Household>>,
     mut clock: ResMut<crate::clock::GameClock>,
+    mut delta: ResMut<crate::clock::SimDelta>,
     mut sims: Query<(Entity, &Sim, &mut Relationships, Has<HouseholdMember>)>,
     mut dormant: ResMut<Dormant>,
     mut notes: ResMut<Notifications>,
@@ -349,6 +353,9 @@ fn carry_over(
     }
     commands.remove_resource::<CarryOver>();
     clock.minutes = c.minutes;
+    clock.timeline = c.timeline.clone();
+    clock.restored = true;
+    delta.0 = 0.0;
     commands.insert_resource(c.town.clone());
     let people = c.family.clone();
     commands.queue(move |w: &mut World| w.resource_mut::<crate::family::Genealogy>().restore(&people));

@@ -24,7 +24,7 @@ impl Plugin for CareersPlugin {
             Update,
             (work_flow, work_schedule, roll_career_events, run_career_events, promote_when_agreed, career_path_answers, career_event_answers, pay_pensions, find_colleagues)
                 .chain()
-                .run_if(in_state(PlayMode::Live)),
+                .run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay),
         );
     }
 }
@@ -2028,7 +2028,7 @@ mod tests {
             .init_resource::<crate::dialog::Questions>()
             .add_message::<LifeEvent>()
             .insert_resource(Household { name: "Test".into(), funds: 0, lot_index: 0, last_bill_day: 0, bills: Vec::new() })
-            .add_systems(Update, work_schedule);
+            .add_systems(Update, work_schedule.in_set(crate::clock::SimPhase::Gameplay));
         let mut sim = random_sim(&mut rand::rng(), "Test", Some(false), Age::Adult);
         sim.traits.clear();
         let e = app
@@ -2080,7 +2080,7 @@ mod tests {
         let hourly = job.info().hourly;
         let (mut app, e) = shift(job, 0.0);
         app.world_mut().entity_mut(e).remove::<AtWork>();
-        app.add_systems(Update, promote_when_agreed);
+        app.add_systems(Update, promote_when_agreed.in_set(crate::clock::SimPhase::Gameplay));
         app.update();
         let job = app.world().get::<Job>(e).unwrap();
         assert_eq!((job.level, job.performance, job.promote), (1, 0.0, false));
@@ -2131,7 +2131,7 @@ mod tests {
         let (mut app, e) = shift(job, 4.0);
         // (Four hours of it, before the shift's end.)
         app.world_mut().get_mut::<AtWork>(e).unwrap().until += 1.0;
-        app.insert_resource(crate::clock::SimDelta(240.0)).add_systems(Update, work_flow.before(work_schedule));
+        app.insert_resource(crate::clock::SimDelta(240.0)).add_systems(Update, work_flow.before(work_schedule).in_set(crate::clock::SimPhase::Gameplay));
         let boss = app.world_mut().spawn((boss_sim, crate::social::Relationships::default())).id();
         app.update();
         // Three an hour (no Charisma, not a Schmoozer).

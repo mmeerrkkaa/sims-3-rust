@@ -37,7 +37,7 @@ pub struct GardeningPlugin;
 impl Plugin for GardeningPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Garden>()
-            .add_systems(Update, (starter_packet, restore_plants, garden_requests, grow, evaluate_plants, sprinkle, flame_fruit, dead_looks).chain().run_if(in_state(PlayMode::Live)));
+            .add_systems(Update, (starter_packet, restore_plants, garden_requests, grow, evaluate_plants, sprinkle, flame_fruit, dead_looks).chain().run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay));
     }
 }
 

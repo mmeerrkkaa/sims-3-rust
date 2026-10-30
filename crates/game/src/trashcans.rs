@@ -190,10 +190,10 @@ fn owners(
     mut last: Local<f32>,
     mut out: ResMut<CanOwners>,
     objects: Query<(Entity, &GameObject, Option<&crate::visit::LotObject>)>,
-    family: Query<Entity, Or<(With<HouseholdMember>, With<crate::homes::Resident>)>>,
+    family: Query<(Entity, Option<&crate::homes::Resident>), Or<(With<HouseholdMember>, With<crate::homes::Resident>)>>,
     members: Query<(), With<HouseholdMember>>,
     household: Option<Res<crate::interact::Household>>,
-    visited: Option<Res<crate::visit::VisitedLot>>,
+    visited: Res<crate::visit::OpenLots>,
     world: Res<crate::loading::CurrentWorld>,
     (town, story, dormant): (Option<Res<crate::premade::TownPremades>>, Res<crate::story::TownStory>, Res<crate::household::Dormant>),
 ) {
@@ -204,23 +204,24 @@ fn owners(
     *last = now;
     out.0.clear();
     let worth_of = |lot: Option<usize>| objects.iter().filter(|(_, _, l)| l.map(|l| l.0) == lot).map(|(_, o, _)| o.price.max(0) as i64).sum::<i64>();
-    let home_family: Vec<Entity> = family.iter().filter(|e| members.contains(*e)).collect();
-    let away_family: Vec<Entity> = family.iter().filter(|e| !members.contains(*e)).collect();
-    let visited_family = visited.as_ref().and_then(|v| crate::homes::family_at(&world, town.as_deref(), &story, &dormant, household.as_ref().map(|h| h.lot_index), v.lot));
+    let home_family: Vec<Entity> = family.iter().filter(|(e, _)| members.contains(*e)).map(|(e, _)| e).collect();
     let home = CanOwner { lot: None, family: home_family, lived_in: true, worth: household.as_ref().map_or(0, |h| h.funds) + worth_of(None) };
-    let away = visited.as_ref().map(|v| CanOwner {
-        lot: Some(v.lot),
-        family: away_family,
-        lived_in: visited_family.is_some(),
-        worth: visited_family.map_or(0, |f| f.funds) + worth_of(Some(v.lot)),
-    });
+    let away: std::collections::HashMap<_, _> = visited.0.values().map(|v| {
+        let visited_family = crate::homes::family_at(&world, town.as_deref(), &story, &dormant, household.as_ref().map(|h| h.lot_index), v.lot);
+        (v.lot, CanOwner {
+            lot: Some(v.lot),
+            family: family.iter().filter(|(_, r)| r.is_some_and(|r| r.0 == v.lot)).map(|(e, _)| e).collect(),
+            lived_in: visited_family.is_some(),
+            worth: visited_family.map_or(0, |f| f.funds) + worth_of(Some(v.lot)),
+        })
+    }).collect();
     for (e, o, lot) in &objects {
         if o.kind != ObjectKind::OutdoorTrashCan {
             continue;
         }
         let owner = match lot {
             None => home.clone(),
-            Some(l) => away.clone().filter(|a| a.lot == Some(l.0)).unwrap_or(CanOwner { lot: Some(l.0), ..default() }),
+            Some(l) => away.get(&l.0).cloned().unwrap_or(CanOwner { lot: Some(l.0), ..default() }),
         };
         out.0.insert(e, owner);
     }

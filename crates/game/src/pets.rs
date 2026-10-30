@@ -27,12 +27,12 @@ impl Plugin for PetsPlugin {
             .init_resource::<PendingPets>()
             .add_systems(
                 Update,
-                (load_pet_data, spawn_strays, spawn_household_pets, social_partners, strays, home_pets, animate_pets).chain().run_if(in_state(PlayMode::Live)),
+                (load_pet_data, spawn_strays, spawn_household_pets, social_partners, strays, home_pets, animate_pets).chain().run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay),
             )
-            .add_systems(Update, (pet_cam, pet_do, adopted_pets, stray_traits, dress_accessories).run_if(in_state(PlayMode::Live)))
-            .add_systems(Update, dress_accessories.run_if(in_state(AppState::CreateHousehold)))
+            .add_systems(Update, (pet_cam, pet_do, adopted_pets, stray_traits, dress_accessories).run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay))
+            .add_systems(Update, dress_accessories.run_if(in_state(AppState::CreateHousehold)).in_set(crate::clock::SimPhase::Gameplay))
             // (Create a Pet's pet, in the dressing room.)
-            .add_systems(Update, (load_pet_data, animate_pets).chain().run_if(in_state(AppState::CreateHousehold)));
+            .add_systems(Update, (load_pet_data, animate_pets).chain().run_if(in_state(AppState::CreateHousehold)).in_set(crate::clock::SimPhase::Gameplay));
     }
 }
 
@@ -769,6 +769,7 @@ pub fn put_on_tack(commands: &mut Commands, data: &PetsBaked, kind: &str, skel: 
 /// Plays each pet's animation on its skeleton (looping), fading from the last over a moment.
 fn animate_pets(
     time: Res<Time>,
+    delta: Res<crate::clock::SimDelta>,
     (clock, state): (Option<Res<GameClock>>, Res<State<AppState>>),
     data: Res<Baked>,
     mut lib: ResMut<ClipLibrary>,
@@ -776,11 +777,10 @@ fn animate_pets(
     mut joints: Query<&mut Transform, Without<PetSkeleton>>,
 ) {
     // (In Create a Pet, at its own pace: the game's clock isn't running.)
-    let rate = match clock {
-        Some(c) if *state.get() != AppState::CreateHousehold => SPEED_RATES[c.speed].min(3.0),
-        _ => 1.0,
+    let dt = match clock {
+        Some(c) if *state.get() != AppState::CreateHousehold => delta.capped(SPEED_RATES[c.speed], 3.0),
+        _ => time.delta_secs().min(0.1),
     };
-    let dt = time.delta_secs().min(0.1) * rate;
     for (skel, mut a) in &mut pets {
         if a.clip.is_empty() {
             continue;
@@ -1103,7 +1103,7 @@ fn spawn_household_pets(
 /// while standing about, sitting or lying down, and asleep at night.
 #[allow(clippy::too_many_arguments)]
 fn home_pets(
-    time: Res<Time>,
+    delta: Res<crate::clock::SimDelta>,
     clock: Res<GameClock>,
     grid: Option<Res<crate::nav::NavGrid>>,
     world: Res<crate::loading::CurrentWorld>,
@@ -1113,7 +1113,7 @@ fn home_pets(
 ) {
     let Some(grid) = grid else { return };
     let lot = household.as_ref().and_then(|h| world.data.lots.get(h.lot_index));
-    let dt = time.delta_secs().min(0.1) * SPEED_RATES[clock.speed].min(3.0);
+    let dt = delta.capped(SPEED_RATES[clock.speed], 3.0);
     let mut rng = rand::rng();
     let night = !(6.0..21.0).contains(&clock.hour_f());
     for (pet, mut h, mut tf, mut anim) in &mut q {
@@ -1251,13 +1251,13 @@ fn spawn_strays(
 /// Strays wander: off somewhere nearby, then a while standing about, sitting or lying down
 /// (asleep at night), and off again.
 fn strays(
-    time: Res<Time>,
+    delta: Res<crate::clock::SimDelta>,
     clock: Res<GameClock>,
     world: Res<crate::loading::CurrentWorld>,
     sidewalk: Option<Res<crate::town::Sidewalk>>,
     mut q: Query<(&Pet, &mut Stray, &mut Transform, &mut PetAnim), Without<PetBusy>>,
 ) {
-    let dt = time.delta_secs().min(0.1) * SPEED_RATES[clock.speed].min(3.0);
+    let dt = delta.capped(SPEED_RATES[clock.speed], 3.0);
     let mut rng = rand::rng();
     let night = !(6.0..21.0).contains(&clock.hour_f());
     for (pet, mut s, mut tf, mut anim) in &mut q {
