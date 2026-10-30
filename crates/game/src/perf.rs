@@ -16,6 +16,9 @@ use crate::{AppState, PlayMode};
 
 pub struct PerfPlugin;
 
+#[path = "frame_profile.rs"]
+mod frame_profile;
+
 #[derive(ScheduleLabel, Clone, Debug, PartialEq, Eq, Hash)]
 struct BeforeUpdate;
 
@@ -34,6 +37,7 @@ fn csv_file(path: &Path, header: &str) -> std::io::Result<BufWriter<File>> {
 
 impl Plugin for PerfPlugin {
     fn build(&self, app: &mut App) {
+        frame_profile::install(app);
         let Some(path) = std::env::var_os("SIMS3_PERF") else {
             return;
         };

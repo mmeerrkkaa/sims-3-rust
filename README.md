@@ -44,6 +44,13 @@ The game can also build a missing cache on its first run.
 | `SIMS3_SAVES` | This project's JSON saves | `saves/` |
 | `SIMS3_PERF` | Measurements written to a new CSV | Disabled |
 | `SIMS3_PROFILE=1` | Additional system timings | Disabled |
+| `SIMS3_FRAME_PROFILE` | Main/render stage wall timings written to a new CSV | Disabled |
+| `SIMS3_INDIRECT=1` | Opt into indirect drawing for world-camera comparisons | Direct drawing |
+
+The world camera uses direct draws with GPU preprocessing. On the measured Sunset
+Valley scene, this avoids expensive per-batch indirect-buffer uploads. Indirect
+drawing and GPU culling remain available with `SIMS3_INDIRECT=1` for other workloads.
+Frame-profile timings include nested and parallel work; do not add all rows together.
 
 These are this project's saves; original save and script-mod compatibility is not
 established. Converter updates can require parts of the cache to be rebuilt.

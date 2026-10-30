@@ -70,7 +70,7 @@ fn spawn_camera(mut commands: Commands, world: Res<CurrentWorld>, start: Option<
     let size = (hm.width - 1) as f32;
     let mut focus = start.map(|s| s.0).unwrap_or(Vec3::new(size * 0.5, 0.0, size * 0.5));
     focus.y = hm.sample(focus.x, focus.z);
-    commands.spawn((
+    let mut camera = commands.spawn((
         Camera3d::default(),
         Projection::Perspective(PerspectiveProjection {
             fov: 50f32.to_radians(),
@@ -88,6 +88,12 @@ fn spawn_camera(mut commands: Commands, world: Res<CurrentWorld>, start: Option<
         AmbientLight { color: Color::srgb(0.75, 0.82, 1.0), brightness: 700.0, ..default() },
         DespawnOnExit(AppState::InGame),
     ));
+    // The imported scene has many small material batches. Avoid uploading per-bin
+    // indirect-draw buffers every frame; keep GPU preprocessing with direct draws.
+    // Retain the indirect path as an opt-in for measuring other workloads.
+    if std::env::var("SIMS3_INDIRECT").as_deref() != Ok("1") {
+        camera.insert(bevy::render::view::NoIndirectDrawing);
+    }
 
     commands.spawn((
         DirectionalLight {
