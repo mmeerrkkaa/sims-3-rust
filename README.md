@@ -14,9 +14,10 @@ migrated incrementally to the new architecture; the game is not yet feature-comp
 
 Current engine work includes multiple active lots, persistent resident identities,
 saved guest/resident roles and departure deadlines, fixed-step needs/actions/movement,
-bounded catch-up, saved simulation time debt, and human animation clocks driven by
-simulation ticks with interpolated poses and movement.
-Remaining gameplay systems, pet animation timing, navigation and background residents
+bounded catch-up, saved simulation time debt, and human and pet animation clocks driven
+by simulation ticks with interpolated poses. Pet needs, roaming, greetings, training
+and horse riding also use ordered simulation phases.
+Remaining gameplay systems, navigation and background residents
 are still being migrated. Performance gains are measured as each subsystem changes.
 
 ## Build and run

@@ -31,9 +31,8 @@ pub struct RidingPlugin;
 
 impl Plugin for RidingPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (ride_test, dress).before(ride).run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay))
-            .add_systems(Update, (ride, in_step).chain().before(crate::anim::drive_skeletons).run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay))
-            .add_systems(PostUpdate, seat_riders.before(bevy::transform::TransformSystems::Propagate).run_if(in_state(PlayMode::Live)));
+        app.add_systems(crate::clock::SimTick, (ride_test, dress, ride, in_step, seat_riders).chain().in_set(crate::pets::PetPhase::Riding))
+            .add_systems(Update, sample_riders.before(crate::anim::drive_skeletons).run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay));
     }
 }
 
@@ -480,16 +479,27 @@ fn ride_test(
 }
 
 /// The rider's clip played with the horse's, at the same time through it.
-fn in_step(mut commands: Commands, mut sims: Query<(Entity, &Mounted, Option<&ActionClip>, &mut ClipPlayer)>, horses: Query<&PetAnim>) {
-    for (e, m, clip, mut player) in &mut sims {
+fn in_step(mut commands: Commands, sims: Query<(Entity, &Mounted, Option<&ActionClip>)>) {
+    for (e, m, clip) in &sims {
         let want = ActionClip::new(None, m.rider);
         if clip != Some(&want) {
             commands.entity(e).insert(want);
         }
+    }
+}
+
+/// Keep the rider's rendered pose in phase with the horse without advancing either clock.
+fn sample_riders(
+    presentation: Res<crate::clock::PresentationClock>,
+    mut sims: Query<(&Mounted, &mut ClipPlayer)>,
+    horses: Query<&PetAnim>,
+) {
+    for (m, mut player) in &mut sims {
+        player.presentation_time = None;
         let Some(h) = horses.get(m.horse).ok().filter(|_| m.in_step()) else { continue };
         let Some(dur) = player.clip.as_ref().map(|c| c.duration).filter(|d| *d > 0.0) else { continue };
         // (Getting on and off play once, held at their end; the rest go round.)
-        player.presentation_time = Some(if m.up() { h.time() % dur } else { h.time().min(dur - 1e-3) });
+        player.presentation_time = Some(if m.up() { h.sample_time(presentation.alpha) % dur } else { h.sample_time(presentation.alpha).min(dur - 1e-3) });
     }
 }
 

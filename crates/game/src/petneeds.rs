@@ -24,7 +24,6 @@
 use bevy::prelude::*;
 use rand::Rng;
 
-use crate::PlayMode;
 use crate::clock::GameClock;
 use crate::interact::{GameObject, ObjectKind};
 use crate::pets::{HomePet, Pet, PetAnim, PetBusy, PetTraits};
@@ -33,7 +32,7 @@ pub struct PetNeedsPlugin;
 
 impl Plugin for PetNeedsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (bowls, fall, attention, choose, act, filled, chores, thoughts, needs_test).chain().run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay));
+        app.add_systems(crate::clock::SimTick, (bowls, fall, attention, choose, act, filled, chores, thoughts, needs_test).chain().in_set(crate::pets::PetPhase::Needs));
     }
 }
 

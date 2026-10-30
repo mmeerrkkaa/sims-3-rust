@@ -19,7 +19,6 @@ use bevy::prelude::*;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 
-use crate::PlayMode;
 use crate::anim::{ActionClip, ClipLibrary};
 use crate::baked::Baked;
 use crate::interact::{ActionKind, ActionQueue, Notifications, Phase};
@@ -30,7 +29,7 @@ pub struct DogTricksPlugin;
 
 impl Plugin for DogTricksPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (tricks_test, train, rest).chain().run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay));
+        app.add_systems(crate::clock::SimTick, (tricks_test, train, rest).chain().in_set(crate::pets::PetPhase::Tricks));
     }
 }
 

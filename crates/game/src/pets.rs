@@ -25,16 +25,28 @@ impl Plugin for PetsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PetData>()
             .init_resource::<PendingPets>()
-            .add_systems(
-                Update,
-                (load_pet_data, spawn_strays, spawn_household_pets, social_partners, strays, home_pets, animate_pets).chain().run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay),
-            )
+            .configure_sets(crate::clock::SimTick, (PetPhase::Needs, PetPhase::Company, PetPhase::Tricks, PetPhase::Riding, PetPhase::Roam).chain().in_set(crate::clock::TickPhase::Pets))
+            .add_systems(Update, load_pet_data.run_if(in_state(PlayMode::Live).or_else(in_state(AppState::CreateHousehold))).in_set(crate::clock::SimPhase::Prepare))
+            .add_systems(Update, (spawn_strays, spawn_household_pets).chain().after(load_pet_data).run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Prepare))
+            .add_systems(crate::clock::SimTick, (strays, home_pets).chain().in_set(PetPhase::Roam))
+            .add_systems(crate::clock::SimTick, (social_partners, advance_pet_players).chain().after(crate::anim::advance_players::<false>).in_set(crate::clock::TickPhase::Animation))
             .add_systems(Update, (pet_cam, pet_do, adopted_pets, stray_traits, dress_accessories).run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay))
+            .add_systems(Update, animate_pets.after(advance_pet_players).run_if(in_state(PlayMode::Live).or_else(in_state(AppState::CreateHousehold))).in_set(crate::clock::SimPhase::Gameplay))
             .add_systems(Update, dress_accessories.run_if(in_state(AppState::CreateHousehold)).in_set(crate::clock::SimPhase::Gameplay))
-            // (Create a Pet's pet, in the dressing room.)
-            .add_systems(Update, (load_pet_data, animate_pets).chain().run_if(in_state(AppState::CreateHousehold)).in_set(crate::clock::SimPhase::Gameplay));
+            // Create a Pet previews keep their independent real-time clock.
+            .add_systems(Update, advance_pet_players.run_if(in_state(AppState::CreateHousehold)).in_set(crate::clock::SimPhase::Gameplay));
+        #[cfg(local_validation)]
+        app.init_resource::<crate::npc_ownership_test::PetClockProbe>()
+            .add_systems(Update, crate::npc_ownership_test::pet_fixture.after(load_pet_data).before(spawn_household_pets).in_set(crate::clock::SimPhase::Prepare).run_if(in_state(PlayMode::Live).and_then(|| std::env::var_os("PET_CLOCK_TEST").is_some())))
+            .add_systems(Update, crate::npc_ownership_test::pet_clock_before.before(animate_pets).in_set(crate::clock::SimPhase::Gameplay).run_if(in_state(PlayMode::Live).and_then(|| std::env::var_os("PET_CLOCK_TEST").is_some())))
+            .add_systems(Update, crate::npc_ownership_test::pet_clock_after.after(animate_pets).in_set(crate::clock::SimPhase::Gameplay).run_if(in_state(PlayMode::Live).and_then(|| std::env::var_os("PET_CLOCK_TEST").is_some())))
+            .add_systems(crate::clock::SimTick, crate::npc_ownership_test::pet_ride_probe.before(crate::interact::run_actions).in_set(crate::clock::TickPhase::Actions).run_if(|| std::env::var_os("PET_CLOCK_TEST").is_some()));
     }
 }
+
+/// Ordered pet gameplay after human actions/movement, before animation clocks.
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum PetPhase { Needs, Company, Tricks, Riding, Roam }
 
 /// The baked pets (kinds and breeds), once loaded.
 #[derive(Resource, Default)]
@@ -428,6 +440,11 @@ pub struct PetAnim {
     time: f32,
     from: Vec<Transform>,
     blend: f32,
+    previous_time: f32,
+    previous_blend: f32,
+    capture_from: bool,
+    #[cfg(local_validation)]
+    pub(crate) clock_advances: u64,
 }
 
 impl PetAnim {
@@ -435,7 +452,10 @@ impl PetAnim {
         if self.clip != clip {
             self.clip = clip;
             self.time = 0.0;
+            self.previous_time = 0.0;
             self.blend = 1.0;
+            self.previous_blend = 1.0;
+            self.capture_from = true;
         }
     }
 
@@ -443,6 +463,7 @@ impl PetAnim {
     pub fn replay(&mut self, clip: String) {
         if self.clip == clip {
             self.time = 0.0;
+            self.previous_time = 0.0;
         } else {
             self.play(clip);
         }
@@ -451,6 +472,11 @@ impl PetAnim {
     /// How far into its clip it is (seconds, counting on past its end as it loops).
     pub fn time(&self) -> f32 {
         self.time
+    }
+
+    /// Presentation sampling never changes the gameplay playhead.
+    pub(crate) fn sample_time(&self, alpha: f32) -> f32 {
+        self.previous_time + (self.time - self.previous_time) * alpha
     }
 }
 
@@ -494,7 +520,8 @@ pub fn spawn_pet(
             Transform::from_translation(pos).with_rotation(Quat::from_rotation_y(yaw)),
             Visibility::default(),
             Pet { kind: b.kind.clone(), breed, name, female, look: look.clone() },
-            PetAnim::default(),
+            // A pet loaded while paused already has a sampled idle pose.
+            PetAnim { clip: format!("{}_idle_stand_breathe_x", b.kind), ..default() },
             DespawnOnExit(AppState::InGame),
         ))
         .id();
@@ -790,32 +817,50 @@ pub fn put_on_tack(commands: &mut Commands, data: &PetsBaked, kind: &str, skel: 
     out
 }
 
-/// Plays each pet's animation on its skeleton (looping), fading from the last over a moment.
-fn animate_pets(
+/// Logical pet playheads advance once per simulation tick (or real-time in CAS).
+fn advance_pet_players(
     time: Res<Time>,
     delta: Res<crate::clock::SimDelta>,
-    (clock, state): (Option<Res<GameClock>>, Res<State<AppState>>),
+    clock: Res<GameClock>,
+    state: Res<State<AppState>>,
+    mut pets: Query<&mut PetAnim>,
+) {
+    let preview = *state.get() == AppState::CreateHousehold;
+    let dt = if preview { time.delta_secs().min(0.1) }
+        else { delta.capped(SPEED_RATES[clock.speed], 3.0) };
+    for mut a in &mut pets {
+        a.previous_time = a.time;
+        a.previous_blend = a.blend;
+        #[cfg(local_validation)]
+        if !preview { a.clock_advances += 1; }
+        if a.clip.is_empty() { continue; }
+        a.time += dt;
+        a.blend = (a.blend - dt * 4.0).max(0.0);
+    }
+}
+
+/// Samples each pet's skeleton; decisions and playheads belong to SimTick.
+pub(crate) fn animate_pets(
+    presentation: Res<crate::clock::PresentationClock>,
+    state: Res<State<AppState>>,
     data: Res<Baked>,
     mut lib: ResMut<ClipLibrary>,
     mut pets: Query<(&PetSkeleton, &mut PetAnim)>,
     mut joints: Query<&mut Transform, Without<PetSkeleton>>,
 ) {
-    // (In Create a Pet, at its own pace: the game's clock isn't running.)
-    let dt = match clock {
-        Some(c) if *state.get() != AppState::CreateHousehold => delta.capped(SPEED_RATES[c.speed], 3.0),
-        _ => time.delta_secs().min(0.1),
-    };
+    let alpha = if *state.get() == AppState::CreateHousehold { 1.0 } else { presentation.alpha };
     for (skel, mut a) in &mut pets {
         if a.clip.is_empty() {
             continue;
         }
         let Some(clip) = lib.get(&data, &a.clip) else { continue };
-        if a.blend >= 1.0 {
+        if a.capture_from {
             a.from = skel.joints.iter().map(|j| joints.get(*j).copied().unwrap_or_default()).collect();
+            a.capture_from = false;
         }
-        a.time += dt;
-        a.blend = (a.blend - dt * 4.0).max(0.0);
-        let t = if clip.duration > 0.0 { a.time % clip.duration } else { 0.0 };
+        let time = a.sample_time(alpha);
+        let blend = a.previous_blend + (a.blend - a.previous_blend) * alpha;
+        let t = if clip.duration > 0.0 { time % clip.duration } else { 0.0 };
         for (i, bone) in skel.rig.bones.iter().enumerate() {
             let Ok(mut tf) = joints.get_mut(skel.joints[i]) else { continue };
             let mut target = skel.bind[i];
@@ -835,11 +880,11 @@ fn animate_pets(
             if i == 0 {
                 target.rotation = skel.bind[i].rotation;
             }
-            if a.blend > 0.0
+            if blend > 0.0
                 && let Some(from) = a.from.get(i)
             {
-                target.translation = target.translation.lerp(from.translation, a.blend);
-                target.rotation = target.rotation.slerp(from.rotation, a.blend);
+                target.translation = target.translation.lerp(from.translation, blend);
+                target.rotation = target.rotation.slerp(from.rotation, blend);
             }
             *tf = target;
         }

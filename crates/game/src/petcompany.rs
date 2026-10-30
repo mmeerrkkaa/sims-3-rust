@@ -18,7 +18,6 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 use rand::Rng;
 
-use crate::PlayMode;
 use crate::anim::{ActionClip, ClipLibrary};
 use crate::baked::Baked;
 use crate::clock::GameClock;
@@ -31,7 +30,7 @@ pub struct PetCompanyPlugin;
 
 impl Plugin for PetCompanyPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (seek_company, greet).chain().run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay));
+        app.add_systems(crate::clock::SimTick, (seek_company, greet).chain().in_set(crate::pets::PetPhase::Company));
     }
 }
 
