@@ -35,6 +35,11 @@ impl Plugin for VisitPlugin {
             app.init_resource::<crate::npc_ownership_test::Probe>()
                 .add_systems(Update, crate::npc_ownership_test::run.after(guests).in_set(crate::clock::SimPhase::Gameplay).run_if(in_state(PlayMode::Live)));
         }
+        #[cfg(local_validation)]
+        if std::env::var_os("NPC_RESIDENCY_TEST").is_some() {
+            app.init_resource::<crate::npc_ownership_test::ResidencyProbe>()
+                .add_systems(Update, crate::npc_ownership_test::residency.after(guests).in_set(crate::clock::SimPhase::Gameplay).run_if(in_state(PlayMode::Live)));
+        }
     }
 }
 
@@ -68,6 +73,9 @@ struct ResumeLotPosition {
     floor: u8,
 }
 
+#[derive(Component)]
+struct RestoreLotRole(s3sim::residents::LotRole);
+
 /// The persistent model contains stable world IDs, not runtime lot indices.
 pub(crate) fn saved_location(world: &WorldInfo, on: Option<&OnLot>, trip: bool, rabbit: Option<&AtRabbitHole>) -> Option<s3sim::residents::WorldLocation> {
     use s3sim::residents::WorldLocation::*;
@@ -85,6 +93,10 @@ pub(crate) fn saved_location(world: &WorldInfo, on: Option<&OnLot>, trip: bool, 
 pub(crate) fn restore_location(ec: &mut bevy::ecs::system::EntityCommands, world: &WorldInfo, saved: &crate::save::SavedSim, now: f64) {
     use s3sim::residents::WorldLocation::*;
     let Some(location) = saved.world_location else { return };
+    // Reinstating spatial ownership must evict background and previous-lot controllers.
+    ec.remove::<(OnLot, Trip, ResumeLotPosition, RestoreLotRole, crate::interact::OffLot,
+        crate::town::Townie, LotGuest, crate::homes::Resident, crate::interact::Visitor,
+        crate::interact::GoingHome, crate::interact::Invited, crate::nav::PathFollow, crate::nav::SpiralClimb)>();
     let (destination, arrival) = match location {
         AtLot { lot } => (Some(lot), now),
         ToLot { lot, arrive_at } => (Some(lot), arrive_at as f64 / 10.0),
@@ -96,12 +108,16 @@ pub(crate) fn restore_location(ec: &mut bevy::ecs::system::EntityCommands, world
     };
     let Some(lot) = world.lots.iter().position(|l| Some(l.id) == destination) else {
         warn!("cannot restore {} on missing lot {:?}", saved.first, destination);
+        if !saved.member { ec.insert((crate::interact::OffLot, Visibility::Hidden)); }
         return;
     };
     ec.remove::<(OnLot, crate::interact::OffLot)>().insert((
         AtRabbitHole { lot, activity: &DRIVE, inside_from: arrival, until: f64::MAX, place: place_name(world, lot) },
         Trip(lot), Visibility::Hidden,
     ));
+    if !saved.member && let Some(role) = saved.lot_role.or(Some(s3sim::residents::LotRole::Guest { leave_at: s3sim::tick_at(arrival + 180.0) })) {
+        ec.insert(RestoreLotRole(role));
+    }
     if matches!(location, AtLot { .. }) {
         ec.insert(ResumeLotPosition { position: Vec3::from(saved.position), yaw: saved.yaw, floor: saved.floor });
     }
@@ -232,12 +248,12 @@ fn arrivals(
     (mut meshes, mut images, mut mats): (ResMut<Assets<Mesh>>, ResMut<Assets<Image>>, ResMut<Assets<StandardMaterial>>),
     mut visited: ResMut<OpenLots>,
     mut building: Option<ResMut<ActiveBuilding>>,
-    mut q: Query<(Entity, &Trip, &AtRabbitHole, &mut Transform, &mut Floor, &Sim, Has<Selected>, Option<&ResumeLotPosition>)>,
+    mut q: Query<(Entity, &Trip, &AtRabbitHole, &mut Transform, &mut Floor, &Sim, Has<Selected>, Option<&ResumeLotPosition>, Option<&RestoreLotRole>)>,
     mut cam: Query<&mut SimsCamera>,
     mut notes: ResMut<Notifications>,
 ) {
     let mut rng = rand::rng();
-    for (e, trip, at, mut tf, mut floor, sim, selected, resume) in &mut q {
+    for (e, trip, at, mut tf, mut floor, sim, selected, resume, role) in &mut q {
         if clock.minutes < at.inside_from {
             continue;
         }
@@ -261,6 +277,14 @@ fn arrivals(
             floor.0 = resume.floor;
         }
         commands.entity(e).remove::<(AtRabbitHole, Trip, ResumeLotPosition, crate::interact::OffLot)>().insert((OnLot(lot), Visibility::Inherited));
+        if let Some(role) = role {
+            let mut entity = commands.entity(e);
+            entity.remove::<RestoreLotRole>();
+            match role.0 {
+                s3sim::residents::LotRole::Guest { leave_at } => { entity.insert(LotGuest { leave_at: leave_at as f64 / 10.0 }); }
+                s3sim::residents::LotRole::Resident => { entity.insert(crate::homes::Resident(lot)); }
+            }
+        }
         if selected && let Ok(mut c) = cam.single_mut() {
             c.look_at(tf.translation);
             c.distance = c.distance.min(30.0);

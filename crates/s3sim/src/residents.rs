@@ -10,3 +10,10 @@ pub enum WorldLocation {
     ToLot { lot: LotId, arrive_at: Tick },
     ToHome { arrive_at: Tick },
 }
+
+/// Detailed-lot ownership is persistent, independent of the ECS actor's current markers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LotRole {
+    Guest { leave_at: Tick },
+    Resident,
+}

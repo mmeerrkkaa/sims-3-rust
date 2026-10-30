@@ -65,6 +65,8 @@ pub struct SavedSim {
     /// Persistent open-world location; absent in saves predating multi-lot simulation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub world_location: Option<s3sim::residents::WorldLocation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lot_role: Option<s3sim::residents::LotRole>,
     pub position: [f32; 3],
     pub yaw: f32,
     pub floor: u8,
@@ -679,6 +681,7 @@ pub(crate) fn saved_look(sim: &Sim) -> SavedSim {
         selected: false,
         whereabouts: "away".into(),
         world_location: None,
+        lot_role: None,
         position: [0.0; 3],
         yaw: 0.0,
         floor: 1,
@@ -1014,7 +1017,7 @@ fn save_game(
                 Option<&crate::aging::Aging>,
                 Option<&crate::little::Pregnancy>,
                 Option<&crate::opportunities::SimOpportunities>,
-                (Option<&crate::visit::OnLot>, Has<crate::visit::Trip>),
+                (Option<&crate::visit::OnLot>, Has<crate::visit::Trip>, Has<crate::homes::Resident>),
                 Option<&crate::lifetime::LifetimeWish>,
                 Option<&crate::writing::Author>,
                 Option<&crate::meals::KnownRecipes>,
@@ -1035,7 +1038,7 @@ fn save_game(
                     Option<&crate::skillbooks::SkillBooks>,
                     (Option<&crate::novels::Novels>, Has<crate::computertraits::BookClub>, Option<&crate::timeoff::TimeOff>, Option<&crate::charity::Charities>),
                     Has<crate::town::Townie>,
-                    Has<crate::visit::LotGuest>,
+                    Option<&crate::visit::LotGuest>,
                 ),
             ),
         ),
@@ -1087,11 +1090,11 @@ fn save_game(
     let Some(hh) = household else { return };
     // (The ghosts too: whom the living know among the dead.)
     let ids: HashMap<Entity, u64> = sims.iter().map(|q| (q.0, q.1.id)).chain(ghosts.iter().map(|g| (g.0, g.1.id))).collect();
-    // (Passers-by are kept only once the household knows them: then as Sims met, away.)
+    // Background passers-by are kept when known. Active lot actors are saved even if unmet.
     let known: std::collections::HashSet<Entity> = sims.iter().filter(|q| q.9).flat_map(|q| q.8.0.keys().copied()).collect();
     let mut saved = Vec::new();
     for (e, sim, tf, floor, motives, skills, moodlets, job, rels, member, selected, away, visiting, wishes, (aging, pregnancy, opps, out, ltw, author, recipes, chess, inventory, toddler, pension, journal, school, homework, (rabbit, temperature, wearing, outfit_chosen, staged, classes, books, (novels, book_club, time_off, charities), townie, guest))) in &sims {
-        if (townie || guest) && !known.contains(&e) {
+        if townie && !known.contains(&e) {
             continue;
         }
         if let Some(s) = staged {
@@ -1116,6 +1119,7 @@ fn save_game(
             selected,
             whereabouts: if member { "home" } else if away { "away" } else if visiting { "visiting" } else { "away" }.into(),
             world_location: crate::visit::saved_location(&world.data, out.0, out.1, rabbit),
+            lot_role: if out.2 { Some(s3sim::residents::LotRole::Resident) } else { guest.map(|g| s3sim::residents::LotRole::Guest { leave_at: s3sim::tick_at(g.leave_at) }) },
             position,
             yaw: tf.rotation.to_euler(EulerRot::YXZ).0,
             floor: level,

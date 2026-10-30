@@ -13,7 +13,8 @@ The port is under active development. Existing content loaders and gameplay are 
 migrated incrementally to the new architecture; the game is not yet feature-complete.
 
 Current engine work includes multiple active lots, persistent resident identities,
-fixed-step needs/actions/movement, bounded catch-up, and saved simulation time debt.
+saved guest/resident roles and departure deadlines, fixed-step needs/actions/movement,
+bounded catch-up, and saved simulation time debt.
 Remaining gameplay systems, animation timing, navigation and background residents
 are still being migrated. Performance gains are measured as each subsystem changes.
 

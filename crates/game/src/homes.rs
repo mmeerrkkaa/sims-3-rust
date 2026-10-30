@@ -130,6 +130,7 @@ fn residents_home(
         ResMut<crate::simbody::SimTextures>,
     ),
     mut sims: Query<(Entity, &Sim, &mut Transform, &mut crate::nav::Floor, &mut Relationships, Has<HouseholdMember>)>,
+    restored_residents: Query<&Resident>,
     mut notes: ResMut<Notifications>,
     mut done: Local<std::collections::HashSet<usize>>,
     building: Option<Res<crate::building::ActiveBuilding>>,
@@ -174,7 +175,8 @@ fn residents_home(
             let e = match existing {
                 Some((_, true)) => continue,
                 Some((e, false)) => {
-                    if let Ok((_, _, mut tf, mut floor, ..)) = sims.get_mut(e) {
+                    if !restored_residents.get(e).is_ok_and(|r| r.0 == v.lot)
+                        && let Ok((_, _, mut tf, mut floor, ..)) = sims.get_mut(e) {
                         tf.translation = pos;
                         floor.0 = 1;
                     }

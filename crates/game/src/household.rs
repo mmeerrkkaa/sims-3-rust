@@ -141,7 +141,7 @@ pub fn move_in_town(mut game: SaveGame, newcomers: &[u64]) -> CarryOver {
 
 /// A Sim of another household, as one the household knows (living elsewhere, at home).
 fn known_as(s: &SavedSim) -> SavedSim {
-    SavedSim { member: false, selected: false, whereabouts: "away".into(), world_location: None, ..s.clone() }
+    SavedSim { member: false, selected: false, whereabouts: "away".into(), world_location: None, lot_role: None, ..s.clone() }
 }
 
 /// The Sims of `other` (a household played before) that `game`'s household knows: kept in
