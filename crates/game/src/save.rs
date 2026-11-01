@@ -249,6 +249,9 @@ pub struct SavedJob {
     pub track: String,
     pub level: usize,
     pub performance: f32,
+    /// Attendance, missed-shift and paid-holiday decisions already applied that day.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_day: Option<u32>,
     /// The career path ("Thief"; "Base" for one that doesn't branch).
     #[serde(default)]
     pub branch: String,
@@ -1130,6 +1133,7 @@ fn save_game(
                 track: j.career().name.into(),
                 level: j.level,
                 performance: j.performance,
+                last_day: j.last_day,
                 branch: j.path().branch.into(),
                 tone: (j.tone != crate::careers::WorkTone::Normal).then(|| j.tone.name().into()),
                 boss: j.boss,
@@ -1505,6 +1509,7 @@ pub(crate) fn apply_loaded_game(
                     job.branch = crate::careers::careers()[track].path_index(&j.branch).unwrap_or(0);
                     job.level = j.level.min(job.levels().len() - 1);
                     job.performance = j.performance;
+                    job.last_day = j.last_day;
                     job.tone = j.tone.as_deref().map(crate::careers::WorkTone::from_name).unwrap_or_default();
                     job.boss = j.boss;
                     job.coworkers = j.coworkers.clone();
