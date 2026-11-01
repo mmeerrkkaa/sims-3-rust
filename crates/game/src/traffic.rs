@@ -144,8 +144,8 @@ pub struct PendingRides(pub Vec<(Vec2, &'static str)>, pub Vec<(Vec2, Key)>);
 #[derive(Component)]
 pub struct CarOut {
     driver: Entity,
-    /// When it's back in the driveway (real seconds, once it's pulled up at the curb).
-    back_at: Option<f32>,
+    /// Simulation wall-step deadline: pause cannot return the car early.
+    back_at: Option<u64>,
 }
 
 /// Whether a catalogue object is a car a household can own (not the town's service vehicles).
@@ -178,7 +178,7 @@ impl Roads {
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn rides(
     mut commands: Commands,
-    time: Res<Time>,
+    clock: Res<GameClock>,
     data: Res<Baked>,
     mut queue: ResMut<PendingRides>,
     departed: Query<
@@ -189,6 +189,7 @@ fn rides(
     members: Query<&Transform, With<crate::sim::HouseholdMember>>,
     mut cars: Query<(Entity, &crate::interact::GameObject, Option<&mut CarOut>), Without<crate::visit::LotObject>>,
 ) {
+    let mut claimed = std::collections::HashSet::new();
     for (e, tf, trip, work, member) in &departed {
         let kind = match trip {
             Some(t) if std::ptr::eq(t.activity, &crate::rabbitholes::SCHOOL) => "CarBusSchool",
@@ -198,21 +199,22 @@ fn rides(
         // (Their own car, for a trip or to work, as the game's Sims drive themselves.)
         if (kind == "CarTaxi" || kind == "CarServiceSedan")
             && member
-            && let Some((car, o, _)) = cars.iter().find(|(_, o, out)| out.is_none() && own_car(&data.0, o.objd))
+            && let Some((car, o, _)) = cars.iter().find(|(car, o, out)| !claimed.contains(car) && out.is_none() && own_car(&data.0, o.objd))
         {
+            claimed.insert(car);
             commands.entity(car).insert((CarOut { driver: e, back_at: None }, Visibility::Hidden));
             queue.1.push((tf.translation.xz(), o.objd));
             continue;
         }
         queue.0.push((tf.translation.xz(), kind));
     }
-    let now = time.elapsed_secs();
+    let now = clock.timeline.ticks;
     for e in back_work.read().chain(back_trip.read()) {
         let Ok(tf) = members.get(e) else { continue };
         match cars.iter_mut().find(|(_, _, out)| out.as_ref().is_some_and(|c| c.driver == e && c.back_at.is_none())) {
             Some((_, o, Some(mut out))) => {
                 queue.1.push((tf.translation.xz(), o.objd));
-                out.back_at = Some(now + 4.0);
+                out.back_at = Some(now.saturating_add(120));
             }
             _ => queue.0.push((tf.translation.xz(), "CarTaxi")),
         }
@@ -229,7 +231,7 @@ fn rides(
 fn traffic(
     delta: Res<crate::clock::SimDelta>,
     mut commands: Commands,
-    time: Res<Time>,
+    workload: Res<crate::clock::TickWorkload>,
     clock: Res<GameClock>,
     world: Res<CurrentWorld>,
     data: Res<Baked>,
@@ -276,7 +278,7 @@ fn traffic(
         }
         count += usize::from(!ride);
         let step = if car.hold > 0.0 {
-            car.hold -= time.delta_secs();
+            car.hold -= workload.steps as f32 * (s3sim::time::STEP_NS as f32 / 1e9);
             0.0
         } else {
             car.speed * dt

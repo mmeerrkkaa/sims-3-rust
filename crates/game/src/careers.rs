@@ -20,14 +20,20 @@ pub struct CareersPlugin;
 
 impl Plugin for CareersPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
-            Update,
-            (work_flow, work_schedule, roll_career_events, run_career_events, promote_when_agreed, career_path_answers, career_event_answers, pay_pensions, find_colleagues)
-                .chain()
-                .run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay),
-        );
+        // Dialog answers and colleague discovery remain frame ingress; progression waits for ticks.
+        app.add_systems(Update, (career_path_answers, career_event_answers, find_colleagues).chain().run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Prepare))
+            .configure_sets(crate::clock::SimTick, (CommitmentPhase::Work, CommitmentPhase::Trips).chain().in_set(crate::clock::TickPhase::Commitments))
+            .add_systems(crate::clock::SimTick, (work_flow, work_schedule, roll_career_events, run_career_events, promote_when_agreed, pay_pensions).chain().in_set(CommitmentPhase::Work));
+        #[cfg(local_validation)]
+        app.init_resource::<crate::npc_ownership_test::CommitmentProbe>()
+            .add_systems(Update, crate::npc_ownership_test::commitment_frame.in_set(crate::clock::SimPhase::Gameplay).run_if(in_state(PlayMode::Live).and_then(|| std::env::var_os("COMMITMENT_TEST").is_some())))
+            .add_systems(crate::clock::SimTick, crate::npc_ownership_test::commitments_before.before(work_flow).in_set(CommitmentPhase::Work).run_if(|| std::env::var_os("COMMITMENT_TEST").is_some()))
+            .add_systems(crate::clock::SimTick, crate::npc_ownership_test::commitment_question.after(pay_pensions).in_set(CommitmentPhase::Work).run_if(|| std::env::var_os("COMMITMENT_TEST").is_some()));
     }
 }
+
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum CommitmentPhase { Work, Trips }
 
 #[derive(Clone, Copy)]
 pub struct CareerLevel {
@@ -940,6 +946,14 @@ pub struct AtWork {
     pub start_perf: f32,
 }
 
+impl AtWork {
+    /// Only the part of the current tick that overlaps the paid shift.
+    pub(crate) fn worked_minutes(&self, now: f64, delta: f32) -> f32 {
+        if delta <= 0.0 { return 0.0; }
+        (now.min(self.until) - (now - delta as f64).max(self.from)).max(0.0) as f32
+    }
+}
+
 /// How long a warning about poor work stands before a demotion (the game's 48 hours).
 const DEMOTION_WARNING_MINUTES: f64 = 48.0 * 60.0;
 
@@ -1194,7 +1208,7 @@ fn work_flow(
     clock: Res<GameClock>,
     mut commands: Commands,
     mut workers: Query<
-        (Entity, &Sim, &mut Job, &Mood, &Skills, &mut crate::social::Relationships, Option<&crate::wishes::Wishes>, &mut Motives, &mut crate::life::Moodlets),
+        (Entity, &Sim, &mut Job, &Mood, &Skills, &mut crate::social::Relationships, Option<&crate::wishes::Wishes>, &mut Motives, &mut crate::life::Moodlets, &AtWork),
         (With<AtWork>, With<HouseholdMember>),
     >,
     people: Query<(Entity, &Sim)>,
@@ -1202,12 +1216,13 @@ fn work_flow(
     ui: Option<Res<crate::layout::UiAssets>>,
     mut household: Option<ResMut<Household>>,
 ) {
-    let hours = delta.0 / 60.0;
-    if hours <= 0.0 || workers.is_empty() {
+    if delta.0 <= 0.0 || workers.is_empty() {
         return;
     }
     let ids: std::collections::HashMap<u64, Entity> = people.iter().map(|(e, s)| (s.id, e)).collect();
-    for (e, sim, mut job, mood, skills, mut rels, wishes, mut motives, mut moodlets) in &mut workers {
+    for (e, sim, mut job, mood, skills, mut rels, wishes, mut motives, mut moodlets, shift) in &mut workers {
+        let hours = shift.worked_minutes(clock.minutes, delta.0) / 60.0;
+        if hours <= 0.0 { continue; }
         // (Working hard till there's no fun left: Overworked, and back to working normally, as
         // the game's Work Hard tone; a Workaholic never minds.)
         if job.tone == WorkTone::WorkHard && motives.0[FUN] < -40.0 && !sim.traits.contains(&Trait::Workaholic) {

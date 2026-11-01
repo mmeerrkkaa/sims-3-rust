@@ -21,6 +21,10 @@ seated chatter, facial expressions and idle animations run on simulation ticks.
 Weather, body temperature, mood updates and reaction playback also use fixed phases;
 frame ingress retains life/social events while paused. Death detection still runs
 once per frame, and pending event queues are not yet part of saved games.
+Work, pensions, school and rabbit-hole outings now progress on simulation ticks.
+Shift accrual is bounded by its start and end; queued questions pause catch-up
+before the dialog appears. Road traffic remains a presentation layer, with
+pause-aware car-return and curb-wait timers; persistent travel is still planned.
 Remaining gameplay systems, navigation and background residents
 are still being migrated. Performance gains are measured as each subsystem changes.
 

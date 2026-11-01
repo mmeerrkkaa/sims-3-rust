@@ -14,7 +14,7 @@ pub enum SimPhase { Advance, Restore, Prepare, Step, Gameplay, Save }
 pub struct SimTick;
 
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum TickPhase { Environment, Needs, Actions, Motion, Pets, Wellbeing, Social, Animation }
+pub enum TickPhase { Environment, Needs, Actions, Commitments, Motion, Pets, Wellbeing, Social, Animation }
 
 /// Fraction between the previous and current simulation states; never advances gameplay.
 #[derive(Resource)]
@@ -57,7 +57,7 @@ pub fn clock_time(h: u64, m: u64) -> String {
 impl Plugin for ClockPlugin {
     fn build(&self, app: &mut App) {
         app.init_schedule(SimTick)
-            .configure_sets(SimTick, (TickPhase::Environment, TickPhase::Needs, TickPhase::Actions, TickPhase::Motion, TickPhase::Pets, TickPhase::Wellbeing, TickPhase::Social, TickPhase::Animation).chain())
+            .configure_sets(SimTick, (TickPhase::Environment, TickPhase::Needs, TickPhase::Actions, TickPhase::Commitments, TickPhase::Motion, TickPhase::Pets, TickPhase::Wellbeing, TickPhase::Social, TickPhase::Animation).chain())
             .init_resource::<PresentationClock>()
             .init_resource::<TickWorkload>()
             .configure_sets(Update, (SimPhase::Advance, SimPhase::Restore, SimPhase::Prepare, SimPhase::Step, SimPhase::Gameplay, SimPhase::Save).chain())
@@ -192,10 +192,10 @@ fn skip_ends(mut clock: ResMut<GameClock>, selected: Query<(Entity, &crate::inte
     }
 }
 
-pub(crate) fn advance_clock(time: Res<Time<Real>>, mut clock: ResMut<GameClock>, mut delta: ResMut<SimDelta>, modal: Query<(), With<crate::dialog::Modal>>, buy: Res<crate::buy::BuyMode>, menu: Res<crate::options::GameMenu>) {
+pub(crate) fn advance_clock(time: Res<Time<Real>>, mut clock: ResMut<GameClock>, mut delta: ResMut<SimDelta>, modal: Query<(), With<crate::dialog::Modal>>, questions: Option<Res<crate::dialog::Questions>>, buy: Res<crate::buy::BuyMode>, menu: Res<crate::options::GameMenu>) {
     // Normal speed: one game minute per real second, like the original (and the game stands
     // still while a question's waiting for an answer).
-    let rate = if modal.is_empty() && !buy.active && !menu.is_open() { SPEED_RATES[clock.speed] } else { 0.0 };
+    let rate = if modal.is_empty() && questions.is_none_or(|q| q.queue.is_empty()) && !buy.active && !menu.is_open() { SPEED_RATES[clock.speed] } else { 0.0 };
     if !clock.restored { clock.timeline.admit(time.delta(), rate as u32); }
     delta.0 = 0.0;
 }
@@ -208,6 +208,7 @@ fn run_ticks(world: &mut World) {
     world.resource_mut::<GameClock>().restored = false;
     let modal = world.query_filtered::<(), With<crate::dialog::Modal>>().iter(world).next().is_some();
     let paused = world.resource::<GameClock>().speed == 0 || modal
+        || world.get_resource::<crate::dialog::Questions>().is_some_and(|q| !q.queue.is_empty())
         || world.resource::<crate::buy::BuyMode>().active || world.resource::<crate::options::GameMenu>().is_open();
     let mut total = 0.0;
     if !paused && !restored {
@@ -224,6 +225,10 @@ fn run_ticks(world: &mut World) {
             world.run_schedule(SimTick);
             total += minutes;
             world.resource_mut::<TickWorkload>().steps += 1;
+            // A career question can be queued before its modal is rendered. Retain
+            // remaining debt instead of simulating further catch-up steps past it.
+            if world.get_resource::<crate::dialog::Questions>().is_some_and(|q| !q.queue.is_empty())
+                || world.query_filtered::<(), With<crate::dialog::Modal>>().iter(world).next().is_some() { break; }
         }
     }
     // Legacy once-per-frame consumers receive exactly the amount actually simulated.

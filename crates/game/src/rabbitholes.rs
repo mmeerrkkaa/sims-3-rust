@@ -6,7 +6,6 @@ use bevy::prelude::*;
 use rand::Rng;
 use s3formats::world::LotInfo;
 
-use crate::PlayMode;
 use crate::clock::{GameClock, SimDelta};
 use crate::interact::*;
 use crate::life::{LifeEvent, LifeEventKind};
@@ -17,7 +16,7 @@ pub struct RabbitHolePlugin;
 
 impl Plugin for RabbitHolePlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (school_bus, outings, told_homework).chain().after(crate::save::apply_loaded_game).run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay));
+        app.add_systems(crate::clock::SimTick, (school_bus, outings, told_homework).chain().in_set(crate::careers::CommitmentPhase::Trips));
     }
 }
 
