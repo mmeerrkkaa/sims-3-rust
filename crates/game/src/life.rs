@@ -33,16 +33,27 @@ pub(crate) enum WellbeingPhase { Needs, Traits, Reactions, Sum }
 /// One cursor shared by frame ingress and tick ingress prevents duplicate delivery.
 /// Queued events survive arbitrarily many paused frames; this queue is session-local.
 #[derive(Resource)]
-pub(crate) struct PendingEvents<T: Message> {
+pub(crate) struct PendingEvents<T: Message, const SUBSCRIBER: u8 = 0> {
     cursor: bevy::ecs::message::MessageCursor<T>,
     events: Vec<T>,
 }
 
-impl<T: Message> Default for PendingEvents<T> {
+impl<T: Message, const S: u8> Default for PendingEvents<T, S> {
     fn default() -> Self { Self { cursor: Default::default(), events: Vec::new() } }
 }
 
-pub(crate) fn capture_events<T: Message + Clone>(messages: Res<Messages<T>>, clock: Res<GameClock>, mut pending: ResMut<PendingEvents<T>>) {
+/// Register an independent subscriber. IDs are per message type; zero is wellbeing's.
+pub(crate) fn buffer_events<T: Message + Clone, const S: u8>(app: &mut App) {
+    app.init_resource::<PendingEvents<T, S>>()
+        .add_systems(Update, capture_subscriber::<T, S>.run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Prepare))
+        .add_systems(OnExit(crate::AppState::InGame), clear_subscriber::<T, S>);
+}
+
+pub(crate) fn capture_events<T: Message + Clone>(messages: Res<Messages<T>>, clock: Res<GameClock>, pending: ResMut<PendingEvents<T>>) {
+    capture_subscriber::<T, 0>(messages, clock, pending);
+}
+
+pub(crate) fn capture_subscriber<T: Message + Clone, const S: u8>(messages: Res<Messages<T>>, clock: Res<GameClock>, mut pending: ResMut<PendingEvents<T, S>>) {
     let pending = &mut *pending;
     // A load replaces residents/state before Prepare. Never replay old-world effects.
     if clock.restored {
@@ -53,13 +64,19 @@ pub(crate) fn capture_events<T: Message + Clone>(messages: Res<Messages<T>>, clo
     pending.events.extend(pending.cursor.read(&messages).cloned());
 }
 
-pub(crate) fn clear_events<T: Message>(messages: Res<Messages<T>>, mut pending: ResMut<PendingEvents<T>>) {
+pub(crate) fn clear_events<T: Message>(messages: Res<Messages<T>>, pending: ResMut<PendingEvents<T>>) {
+    clear_subscriber::<T, 0>(messages, pending);
+}
+
+pub(crate) fn clear_subscriber<T: Message, const S: u8>(messages: Res<Messages<T>>, mut pending: ResMut<PendingEvents<T, S>>) {
     pending.events.clear();
     pending.cursor.clear(&messages);
 }
 
-impl<T: Message> PendingEvents<T> {
+impl<T: Message, const S: u8> PendingEvents<T, S> {
     pub(crate) fn take(&mut self) -> Vec<T> { std::mem::take(&mut self.events) }
+    #[cfg(local_validation)]
+    pub(crate) fn buffered(&self) -> &[T] { &self.events }
 }
 
 // ---------------------------------------------------------------------------------------------

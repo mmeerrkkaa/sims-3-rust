@@ -6,7 +6,6 @@
 
 use bevy::prelude::*;
 
-use crate::PlayMode;
 use crate::clock::GameClock;
 use crate::life::MoodletKind;
 use crate::sim::Sim;
@@ -16,8 +15,15 @@ pub struct HolidaysPlugin;
 
 impl Plugin for HolidaysPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, holidays.run_if(in_state(PlayMode::Live)));
+        app.add_systems(crate::clock::SimTick, holidays.in_set(crate::aging::LifecyclePhase::Holidays));
     }
+}
+
+/// Persistent delivery markers prevent repeated holiday bonuses after reload.
+#[derive(Clone, Default, Debug, serde::Serialize, serde::Deserialize)]
+pub struct HolidayHistory {
+    pub warned: Option<u32>,
+    pub started: Option<u32>,
 }
 
 /// Snowflake Day's holiday bonus at work (every career's `HolidayBonusChance` and
@@ -84,22 +90,23 @@ fn holidays(
     mut notes: ResMut<crate::interact::Notifications>,
     mut sound: MessageWriter<crate::sound::PlaySound>,
     mut sims: Query<(&Sim, &mut crate::life::Moodlets, Option<&crate::careers::Job>, Has<crate::sim::HouseholdMember>)>,
-    mut told: Local<(Option<u32>, Option<u32>)>,
+    mut story: ResMut<crate::story::TownStory>,
     mut household: Option<ResMut<crate::interact::Household>>,
 ) {
     let Some(w) = weather else { return };
+    let told = &mut story.holidays;
     let day = clock.day();
     let (holiday, season) = holiday_of(&w, day);
     let (name, key, moodlet, sting) = holiday_info(season);
     let say = |kind: &str, fallback: String| layouts.as_ref().and_then(|l| l.localize(&format!("Gameplay/Excel/Notifications/Notifications:{key}{kind}"))).unwrap_or(fallback);
     // (The day before.)
-    if holiday == day + 1 && told.0 != Some(holiday) {
-        told.0 = Some(holiday);
+    if holiday == day + 1 && told.warned != Some(holiday) {
+        told.warned = Some(holiday);
         notes.push(say("Warning", format!("{name} is coming up!")));
     }
     // (On the day, from five in the morning.)
-    if holiday == day && clock.hour_f() >= START_HOUR && told.1 != Some(holiday) {
-        told.1 = Some(holiday);
+    if holiday == day && clock.hour_f() >= START_HOUR && told.started != Some(holiday) {
+        told.started = Some(holiday);
         notes.push(say("Starting", format!("{name} is here!")));
         sound.write(crate::sound::PlaySound::ui(sting));
         let mut rng = rand::rng();

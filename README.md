@@ -25,6 +25,11 @@ Work, pensions, school and rabbit-hole outings now progress on simulation ticks.
 Shift accrual is bounded by its start and end; queued questions pause catch-up
 before the dialog appears. Road traffic remains a presentation layer, with
 pause-aware car-return and curb-wait timers; persistent travel is still planned.
+Wishes, dream trees, lifetime goals and passive happiness also progress on ticks;
+independent event subscribers retain paused happenings without consuming each other's queues.
+Household aging, town story progression, holidays and celebrity progression now use
+ordered tick phases, while body rebuilding stays in frame presentation. Town day
+catch-up retains pending days; holiday delivery markers are included in saves.
 Remaining gameplay systems, navigation and background residents
 are still being migrated. Performance gains are measured as each subsystem changes.
 

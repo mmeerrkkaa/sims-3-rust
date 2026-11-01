@@ -32,10 +32,45 @@ pub struct DreamsPlugin;
 
 impl Plugin for DreamsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<DreamEvent>().add_systems(
-            Update,
-            (life_events, relationship_events, wake_events, activity_events, journal_events, state_events, heartbeat, run_dreams, wish_test, promise_test, sync_wishes, confirm_lifetime).chain().after(crate::save::apply_loaded_game).run_if(in_state(PlayMode::Live)),
-        );
+        app.add_message::<DreamEvent>()
+            .init_resource::<DreamObservations>()
+            .add_systems(Update, (reset_observations, confirm_lifetime).chain().run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Prepare))
+            .add_systems(crate::clock::SimTick, (
+                initialize_dreams,
+                crate::life::capture_subscriber::<crate::life::LifeEvent, 2>, life_events,
+                relationship_events, wake_events, activity_events,
+                crate::life::capture_subscriber::<crate::journal::Did, 0>, journal_events,
+                crate::life::capture_subscriber::<crate::life::LifeEvent, 3>, state_events,
+                heartbeat, crate::life::capture_subscriber::<DreamEvent, 0>, run_dreams,
+                wish_test, promise_test, sync_wishes,
+            ).chain().in_set(crate::wishes::AspirationPhase::Dreams));
+        crate::life::buffer_events::<crate::life::LifeEvent, 2>(app);
+        crate::life::buffer_events::<crate::life::LifeEvent, 3>(app);
+        crate::life::buffer_events::<crate::journal::Did, 0>(app);
+        crate::life::buffer_events::<DreamEvent, 0>(app);
+        #[cfg(local_validation)]
+        app.add_systems(crate::clock::SimTick, crate::npc_ownership_test::aspiration_dreams.after(crate::life::capture_subscriber::<DreamEvent, 0>).before(run_dreams).in_set(crate::wishes::AspirationPhase::Dreams).run_if(|| std::env::var_os("ASPIRATION_TEST").is_some()));
+    }
+}
+
+#[derive(Resource, Default)]
+struct DreamObservations {
+    relationships: HashMap<(Entity, Entity), &'static str>,
+    relationship_tick: Option<u64>,
+    asleep: HashMap<Entity, f64>,
+    sleepers_seen: std::collections::HashSet<Entity>,
+    doing: HashMap<Entity, (String, f32)>,
+    state: StateSeen,
+    heartbeat: Option<f64>,
+}
+
+fn reset_observations(clock: Res<crate::clock::GameClock>, mut seen: ResMut<DreamObservations>) {
+    if clock.restored { *seen = DreamObservations::default(); }
+}
+
+fn initialize_dreams(mut commands: Commands, sims: Query<(Entity, &Sim), (With<HouseholdMember>, Without<Dreams>)>) {
+    for (e, sim) in &sims {
+        if !sim.age.is_little() { commands.entity(e).insert(Dreams::default()); }
     }
 }
 
@@ -484,9 +519,9 @@ impl Dreams {
 }
 
 /// The game's happenings from the Sims' life events.
-fn life_events(mut life: MessageReader<crate::life::LifeEvent>, mut out: MessageWriter<DreamEvent>) {
+fn life_events(mut life: ResMut<crate::life::PendingEvents<crate::life::LifeEvent, 2>>, mut out: MessageWriter<DreamEvent>) {
     use crate::life::LifeEventKind as K;
-    for ev in life.read() {
+    for ev in life.take() {
         let s = ev.sim;
         let mut send = |e: DreamEvent| {
             out.write(e);
@@ -549,12 +584,12 @@ pub fn social(w: &mut World, actor: Entity, target: Entity, name: &str, accepted
 
 /// Where each household Sim stands with everyone, by the game's levels: met someone new
 /// (`kMetSim`), a level changed (`kRelationshipLTRChanged`).
-fn relationship_events(sims: Query<(Entity, &Relationships), With<HouseholdMember>>, mut seen: Local<HashMap<(Entity, Entity), &'static str>>, mut out: MessageWriter<DreamEvent>, time: Res<Time>, mut last: Local<f32>) {
+fn relationship_events(sims: Query<(Entity, &Relationships), With<HouseholdMember>>, mut observed: ResMut<DreamObservations>, mut out: MessageWriter<DreamEvent>, clock: Res<crate::clock::GameClock>) {
     let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra42);
-    if time.elapsed_secs() - *last < 1.0 {
-        return;
-    }
-    *last = time.elapsed_secs();
+    let tick = clock.timeline.ticks;
+    if observed.relationship_tick.is_some_and(|last| tick >= last && tick - last < 30) { return; }
+    observed.relationship_tick = Some(tick);
+    let seen = &mut observed.relationships;
     for (me, rels) in &sims {
         for (other, r) in &rels.0 {
             let now = ltr_name(r);
@@ -575,10 +610,11 @@ fn relationship_events(sims: Query<(Entity, &Relationships), With<HouseholdMembe
 fn wake_events(
     sims: Query<(Entity, &crate::interact::ActionQueue), With<HouseholdMember>>,
     clock: Res<crate::clock::GameClock>,
-    (mut asleep, mut seen): (Local<HashMap<Entity, f64>>, Local<std::collections::HashSet<Entity>>),
+    mut observed: ResMut<DreamObservations>,
     mut out: MessageWriter<DreamEvent>,
 ) {
     let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra43);
+    let DreamObservations { asleep, sleepers_seen: seen, .. } = &mut *observed;
     for (e, q) in &sims {
         let sleeping = q.0.front().is_some_and(|a| matches!(a.label.as_str(), "Sleep" | "Nap") && matches!(a.phase, crate::interact::Phase::Running(_)));
         // (One asleep when the game's loaded: a night's sleep, as likely as not.)
@@ -598,8 +634,9 @@ fn wake_events(
 
 /// What each Sim's at, followed: an activity left (done or not) is the game's event for it, its
 /// hours the amount (`activity_kinds`).
-fn activity_events(sims: Query<(Entity, &crate::interact::ActionQueue), With<HouseholdMember>>, mut doing: Local<HashMap<Entity, (String, f32)>>, mut out: MessageWriter<DreamEvent>) {
+fn activity_events(sims: Query<(Entity, &crate::interact::ActionQueue), With<HouseholdMember>>, mut observed: ResMut<DreamObservations>, mut out: MessageWriter<DreamEvent>) {
     let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra44);
+    let doing = &mut observed.doing;
     for (e, q) in &sims {
         let now = q.0.front().and_then(|a| match a.phase {
             crate::interact::Phase::Running(t) => Some((a.label.clone(), t)),
@@ -634,19 +671,20 @@ fn activity_events(sims: Query<(Entity, &crate::interact::ActionQueue), With<Hou
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn state_events(
     sims: Query<(Entity, &Moodlets, Option<&crate::visit::OnLot>, Has<crate::careers::AtWork>, &Transform, &Visibility, (Has<Job>, Has<crate::careers::Pension>)), With<HouseholdMember>>,
-    mut life: MessageReader<crate::life::LifeEvent>,
+    mut life: ResMut<crate::life::PendingEvents<crate::life::LifeEvent, 3>>,
     others: Query<(Entity, &Transform, &Visibility, Option<&crate::visit::OnLot>), With<Sim>>,
     household: Option<Res<Household>>,
     date: Option<Res<crate::dates::Date>>,
     clock: Res<crate::clock::GameClock>,
-    mut seen: Local<StateSeen>,
+    mut observed: ResMut<DreamObservations>,
     mut out: MessageWriter<DreamEvent>,
 ) {
     let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra45);
+    let seen = &mut observed.state;
     let now = clock.minutes;
     let first = !seen.ready;
     seen.ready = true;
-    for ev in life.read() {
+    for ev in life.take() {
         if matches!(ev.kind, crate::life::LifeEventKind::Fired) {
             seen.fired.insert(ev.sim, now);
         }
@@ -731,9 +769,9 @@ struct StateSeen {
 
 /// What's counted towards the skill journals, as the game's events: a fish caught (its kind and
 /// weight), a dish made, something harvested, repaired, upgraded, a star found, tutoring.
-fn journal_events(mut did: MessageReader<crate::journal::Did>, mut out: MessageWriter<DreamEvent>) {
+fn journal_events(mut did: ResMut<crate::life::PendingEvents<crate::journal::Did>>, mut out: MessageWriter<DreamEvent>) {
     use crate::journal::{Deed, Kinds, Stat};
-    for d in did.read() {
+    for d in did.take() {
         let s = d.sim;
         match &d.what {
             Deed::Caught(fish, weight) => {
@@ -887,9 +925,10 @@ fn promise_test(mut sims: Query<&mut crate::wishes::Wishes, With<Dreams>>, on: L
 const NIGHT: f64 = 6.0 * 60.0;
 
 /// Every half hour, each Sim's heartbeat (`kSimHeartbeat`, `kDnPSynchronizeEvent`).
-fn heartbeat(sims: Query<Entity, With<Dreams>>, clock: Res<crate::clock::GameClock>, mut last: Local<f64>, mut out: MessageWriter<DreamEvent>) {
+fn heartbeat(sims: Query<Entity, With<Dreams>>, clock: Res<crate::clock::GameClock>, mut observed: ResMut<DreamObservations>, mut out: MessageWriter<DreamEvent>) {
     let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra49);
-    if clock.minutes - *last < FULL_UPDATE {
+    let last = observed.heartbeat.get_or_insert(clock.minutes);
+    if clock.minutes >= *last && clock.minutes - *last < FULL_UPDATE {
         return;
     }
     *last = clock.minutes;
@@ -905,7 +944,7 @@ fn run_dreams(
     mut sims: Query<(Entity, &Sim, Option<&mut Dreams>, &Skills, Option<&Job>, &Relationships, &Mood, Option<&mut crate::wishes::Wishes>, &mut Moodlets, Option<&crate::lifetime::LifetimeWish>), With<HouseholdMember>>,
     people: PeopleQuery,
     extra: ExtraQuery,
-    mut events: MessageReader<DreamEvent>,
+    mut events: ResMut<crate::life::PendingEvents<DreamEvent>>,
     (gu, ui, household, clock): (Option<Res<crate::icons::GameUi>>, Option<Res<crate::layout::UiAssets>>, Option<Res<Household>>, Res<crate::clock::GameClock>),
     objects: Query<&crate::interact::GameObject, Without<crate::visit::LotObject>>,
     baked: Option<Res<crate::baked::Baked>>,
@@ -915,6 +954,7 @@ fn run_dreams(
     (plants, mut town): (Query<&crate::gardening::GrowingPlant>, Local<Option<(String, Town)>>),
 ) {
     let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra50);
+    let evs = events.take();
     let Some(gu) = gu else { return };
     let gdata = gu.data.clone();
     let data = &gdata.dnp;
@@ -922,9 +962,7 @@ fn run_dreams(
         return;
     }
     // (A bought object's class, from the catalogue.)
-    let evs: Vec<DreamEvent> = events
-        .read()
-        .cloned()
+    let evs: Vec<DreamEvent> = evs.into_iter()
         .map(|mut e| {
             e.class = e.objd.and_then(|k| script_of(baked.as_deref(), &k));
             e

@@ -22,9 +22,20 @@ pub struct LifetimePlugin;
 
 impl Plugin for LifetimePlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<ChosenLifetimeWishes>()
-            .add_systems(Update, (assign_lifetime_wishes, lifetime_answers, track_lifetime_wishes).chain().run_if(in_state(PlayMode::Live)));
+        app.init_resource::<ChosenLifetimeWishes>().init_resource::<LifetimeCheck>()
+            .add_systems(Update, (reset_lifetime_check, lifetime_answers).chain().run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Prepare))
+            .add_systems(crate::clock::SimTick, (crate::life::capture_subscriber::<LifeEvent, 4>, assign_lifetime_wishes).chain().in_set(crate::wishes::AspirationPhase::Assign))
+            .add_systems(crate::clock::SimTick, (crate::life::capture_subscriber::<LifeEvent, 5>, track_lifetime_wishes).chain().in_set(crate::wishes::AspirationPhase::Lifetime));
+        crate::life::buffer_events::<LifeEvent, 4>(app);
+        crate::life::buffer_events::<LifeEvent, 5>(app);
     }
+}
+
+#[derive(Resource, Default)]
+struct LifetimeCheck(f64);
+
+fn reset_lifetime_check(clock: Res<GameClock>, mut next: ResMut<LifetimeCheck>) {
+    if clock.restored { next.0 = clock.minutes; }
 }
 
 /// What a lifetime wish asks for (`n` being its number).
@@ -247,7 +258,7 @@ pub fn ask_lifetime_wish(questions: &mut Questions, data: Option<&s3bake::GameDa
 #[allow(clippy::type_complexity)]
 fn assign_lifetime_wishes(
     mut commands: Commands,
-    mut events: MessageReader<LifeEvent>,
+    mut events: ResMut<crate::life::PendingEvents<LifeEvent, 4>>,
     mut chosen: ResMut<ChosenLifetimeWishes>,
     mut questions: ResMut<Questions>,
     ui: Option<Res<crate::icons::GameUi>>,
@@ -255,7 +266,7 @@ fn assign_lifetime_wishes(
 ) {
     let data = ui.as_ref().map(|u| &*u.data);
     // A child who just became a teen chooses.
-    for ev in events.read() {
+    for ev in events.take() {
         if matches!(ev.kind, LifeEventKind::Birthday)
             && let Ok((e, sim, false)) = sims.get(ev.sim)
             && sim.age == Age::Teen
@@ -364,7 +375,7 @@ fn measure(d: &LifetimeWishDef, data: Option<&s3bake::GameDataBaked>, at: &Stand
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn track_lifetime_wishes(
     clock: Res<GameClock>,
-    mut events: MessageReader<LifeEvent>,
+    mut events: ResMut<crate::life::PendingEvents<LifeEvent, 5>>,
     household: Option<Res<Household>>,
     ui: Option<Res<crate::icons::GameUi>>,
     objects: Query<&GameObject>,
@@ -387,13 +398,13 @@ fn track_lifetime_wishes(
     ages: Query<&Sim, With<HouseholdMember>>,
     mut notes: ResMut<Notifications>,
     mut play: MessageWriter<crate::sound::PlaySound>,
-    mut next_check: Local<f64>,
+    mut next_check: ResMut<LifetimeCheck>,
     (garden, bowls): (Option<Res<crate::gardening::Garden>>, Option<Res<crate::fishbowl::PerfectFish>>),
     (everyone, town, graves): (Query<(&Sim, Has<HouseholdMember>)>, Option<Res<crate::premade::TownPremades>>, Query<&crate::ghosts::Grave>),
 ) {
     let data = ui.as_ref().map(|u| &*u.data);
     let mut changed = false;
-    for ev in events.read() {
+    for ev in events.take() {
         changed = true;
         match ev.kind {
             // A child grown into a teen counts for each grown-up of the household.
@@ -421,10 +432,10 @@ fn track_lifetime_wishes(
             _ => {}
         }
     }
-    if !changed && clock.minutes < *next_check {
+    if !changed && clock.minutes < next_check.0 {
         return;
     }
-    *next_check = clock.minutes + 15.0;
+    next_check.0 = clock.minutes + 15.0;
     let funds = household.as_ref().map_or(0, |h| h.funds);
     let worth = funds + objects.iter().map(|o| o.price as i64).sum::<i64>();
     for (_, sim, mut w, skills, job, rels, wishes, mut moodlets, author, known, chess) in &mut sims {

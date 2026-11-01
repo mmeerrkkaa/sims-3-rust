@@ -43,7 +43,10 @@ pub struct CelebrityPlugin;
 impl Plugin for CelebrityPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Journal>()
-            .add_systems(Update, (seed_fame, mark_famous, friends_of_the_famous, free_stuff, town_fame, fame_test, journal).chain().run_if(in_state(PlayMode::Live)))
+            .add_systems(Update, (seed_fame, fame_test).chain().run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Prepare))
+            .add_systems(crate::clock::SimTick, (town_fame, mark_famous, free_stuff).chain().in_set(crate::aging::LifecyclePhase::Fame))
+            .add_systems(crate::clock::SimTick, friends_of_the_famous.in_set(crate::wishes::AspirationPhase::Initialize))
+            .add_systems(Update, journal.run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay))
             .add_systems(OnExit(crate::AppState::InGame), |mut j: ResMut<Journal>| *j = Journal::default());
     }
 }

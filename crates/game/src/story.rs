@@ -23,8 +23,21 @@ pub struct StoryPlugin;
 
 impl Plugin for StoryPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<TownStory>().add_systems(Update, (merge_created, progress, read_the_news).chain().run_if(in_state(PlayMode::Live)));
+        app.init_resource::<TownStory>()
+            .add_systems(Update, (prepare_story, merge_created).chain().run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Prepare))
+            .add_systems(crate::clock::SimTick, (merge_created, progress, read_the_news).chain().in_set(crate::aging::LifecyclePhase::Town));
     }
+}
+
+fn prepare_story(clock: Res<GameClock>, mut story: ResMut<TownStory>, members: Query<(), With<HouseholdMember>>) {
+    if members.is_empty() { return; }
+    let today = clock.day();
+    if !story.day_initialized {
+        // Older saves with a positive day already contain a valid checkpoint.
+        if story.day == 0 { story.day = today; }
+        story.day_initialized = true;
+    }
+    if clock.restored && story.day > today { story.day = today; }
 }
 
 /// How the town's Sims have moved on since the world began.
@@ -33,8 +46,14 @@ pub struct TownStory {
     /// Persistent decisions keyed by resident ID, independent of ECS entity lifetimes.
     #[serde(default)]
     pub conversations: s3sim::ConversationPlans,
-    /// The last day the town moved on (0: not yet started).
+    /// The last day the town completed; pending days remain until processed.
     pub day: u32,
+    /// Distinguishes a real day zero from the legacy uninitialized sentinel.
+    #[serde(default)]
+    pub day_initialized: bool,
+    /// Holiday notices and bonuses already delivered, shared across household switches.
+    #[serde(default)]
+    pub holidays: crate::holidays::HolidayHistory,
     /// What has changed for each of the world's Sims, by id.
     pub sims: BTreeMap<u64, TownSim>,
     /// Babies born in town.
@@ -212,15 +231,19 @@ fn progress(
         return;
     }
     let today = clock.day();
-    if story.day == 0 {
-        story.day = today.max(1);
+    if !story.day_initialized {
+        story.day = today;
+        story.day_initialized = true;
         return;
     }
     if today <= story.day || clock.hour_f() < 6.0 {
         return;
     }
-    let days = (today - story.day).min(7);
-    story.day = today;
+    // Bound the batch without discarding older days. Each subsequent tick can
+    // process another day, and this checkpoint is already part of saved TownStory.
+    let days = (today - story.day).min(1);
+    story.day += days;
+    let processed_day = story.day;
     // Who the household knows: any of the town's Sims about with whom one of them has a
     // relationship.
     // (Nor those of the households played before: they're as they were left.)
@@ -366,7 +389,7 @@ fn progress(
             let baby = crate::sim::random_sim(&mut rng, &w.last, Some(female), Age::Baby);
             let father = world.iter().find(|(o, _)| o.id == spouse).map(|(o, _)| o.name.clone()).unwrap_or_default();
             story.tell(format!("{} and {father} had a baby {}, {}.", w.name, if female { "girl" } else { "boy" }, baby.first));
-            story.born.push(Newborn { first: baby.first, last: w.last.clone(), female, parents: (w.id, spouse), day: today });
+            story.born.push(Newborn { first: baby.first, last: w.last.clone(), female, parents: (w.id, spouse), day: processed_day });
         }
         // Jobs and promotions.
         for (w, m) in &world {

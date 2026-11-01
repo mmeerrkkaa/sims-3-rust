@@ -17,9 +17,22 @@ pub struct WishesPlugin;
 
 impl Plugin for WishesPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (offer_wishes, mood_happiness, fulfil_wishes, buy_rewards).chain().after(crate::save::apply_loaded_game).run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay));
+        crate::life::buffer_events::<LifeEvent, 1>(app);
+        app.configure_sets(crate::clock::SimTick, (AspirationPhase::Initialize, AspirationPhase::Assign, AspirationPhase::Dreams, AspirationPhase::Fulfil, AspirationPhase::Lifetime, AspirationPhase::Happiness).chain().in_set(crate::clock::TickPhase::Aspirations))
+            .add_systems(Update, buy_rewards.run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Prepare))
+            .add_systems(crate::clock::SimTick, offer_wishes.in_set(AspirationPhase::Initialize))
+            .add_systems(crate::clock::SimTick, (crate::life::capture_subscriber::<LifeEvent, 1>, fulfil_wishes).chain().in_set(AspirationPhase::Fulfil))
+            .add_systems(crate::clock::SimTick, mood_happiness.in_set(AspirationPhase::Happiness));
+        #[cfg(local_validation)]
+        app.init_resource::<crate::npc_ownership_test::AspirationProbe>()
+            .add_systems(Update, crate::npc_ownership_test::aspiration_frame.in_set(crate::clock::SimPhase::Gameplay).run_if(in_state(PlayMode::Live).and_then(|| std::env::var_os("ASPIRATION_TEST").is_some())))
+            .add_systems(crate::clock::SimTick, crate::npc_ownership_test::aspiration_before.before(mood_happiness).in_set(AspirationPhase::Happiness).run_if(|| std::env::var_os("ASPIRATION_TEST").is_some()))
+            .add_systems(crate::clock::SimTick, crate::npc_ownership_test::aspiration_after.after(mood_happiness).in_set(AspirationPhase::Happiness).run_if(|| std::env::var_os("ASPIRATION_TEST").is_some()));
     }
 }
+
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum AspirationPhase { Initialize, Assign, Dreams, Fulfil, Lifetime, Happiness }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum WishKind {
@@ -539,11 +552,11 @@ fn offer_wishes(
 #[allow(clippy::type_complexity)]
 fn fulfil_wishes(
     clock: Res<GameClock>,
-    mut events: MessageReader<LifeEvent>,
+    mut events: ResMut<crate::life::PendingEvents<LifeEvent, 1>>,
     mut sims: Query<(&Sim, &mut Wishes, &mut Moodlets)>,
     mut notes: ResMut<Notifications>,
 ) {
-    for ev in events.read() {
+    for ev in events.take() {
         let Ok((sim, mut w, mut moodlets)) = sims.get_mut(ev.sim) else { continue };
         let matches = |k: &WishKind| match (&ev.kind, k) {
             (LifeEventKind::SkillUp { skill, level }, WishKind::Skill { skill: s, level: l }) => *skill == s && level >= l,
@@ -594,7 +607,7 @@ mod tests {
     fn make_friend_requires_a_new_friendship_not_chatting_with_existing_friends() {
         let mut app = App::new();
         app.init_resource::<GameClock>().init_resource::<Notifications>()
-            .add_message::<LifeEvent>().add_systems(Update, fulfil_wishes.in_set(crate::clock::SimPhase::Gameplay));
+            .add_message::<LifeEvent>().init_resource::<crate::life::PendingEvents<LifeEvent, 1>>().add_systems(Update, (crate::life::capture_subscriber::<LifeEvent, 1>, fulfil_wishes).chain());
         let mut rng = <rand::rngs::StdRng as rand::SeedableRng>::seed_from_u64(92);
         let mut sim = crate::sim::random_sim(&mut rng, "Friend", Some(false), Age::Adult);
         sim.traits.clear();
@@ -641,7 +654,7 @@ mod tests {
     fn only_completed_promised_wishes_award_happiness() {
         let mut app = App::new();
         app.init_resource::<GameClock>().init_resource::<Notifications>()
-            .add_message::<LifeEvent>().add_systems(Update, fulfil_wishes.in_set(crate::clock::SimPhase::Gameplay));
+            .add_message::<LifeEvent>().init_resource::<crate::life::PendingEvents<LifeEvent, 1>>().add_systems(Update, (crate::life::capture_subscriber::<LifeEvent, 1>, fulfil_wishes).chain());
         let mut rng = <rand::rngs::StdRng as rand::SeedableRng>::seed_from_u64(91);
         let mut sim = crate::sim::random_sim(&mut rng, "Promise", Some(false), Age::Adult);
         sim.traits = vec![Trait::Ambitious];
@@ -678,7 +691,7 @@ mod tests {
         assert_eq!(restored, original);
         let mut app = App::new();
         app.init_resource::<GameClock>().init_resource::<Notifications>()
-            .add_message::<LifeEvent>().add_systems(Update, fulfil_wishes.in_set(crate::clock::SimPhase::Gameplay));
+            .add_message::<LifeEvent>().init_resource::<crate::life::PendingEvents<LifeEvent, 1>>().add_systems(Update, (crate::life::capture_subscriber::<LifeEvent, 1>, fulfil_wishes).chain());
         let mut rng = <rand::rngs::StdRng as rand::SeedableRng>::seed_from_u64(90);
         let mut sim = crate::sim::random_sim(&mut rng, "Wishes", Some(false), Age::Adult);
         sim.traits.clear();

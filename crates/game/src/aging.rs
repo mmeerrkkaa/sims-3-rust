@@ -19,8 +19,24 @@ impl Plugin for AgingPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<AgingDay>()
             .add_systems(OnEnter(crate::AppState::Loading), reset_aging_day)
-            .add_systems(Update, (initialize_aging, lifefruit, daily_aging, grow_up_now, rebuild_bodies).chain().after(crate::save::apply_loaded_game).run_if(in_state(PlayMode::Live)));
+            .configure_sets(crate::clock::SimTick, (LifecyclePhase::Aging, LifecyclePhase::Town, LifecyclePhase::Holidays, LifecyclePhase::Fame).chain().in_set(crate::clock::TickPhase::Lifecycle))
+            .add_systems(Update, (prepare_aging_day, initialize_aging).chain().run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Prepare))
+            .add_systems(crate::clock::SimTick, (lifefruit, daily_aging, grow_up_now).chain().in_set(LifecyclePhase::Aging))
+            .add_systems(Update, rebuild_bodies.run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay));
+        #[cfg(local_validation)]
+        app.init_resource::<crate::npc_ownership_test::LifecycleProbe>()
+            .add_systems(Update, crate::npc_ownership_test::lifecycle_reload.run_if(in_state(PlayMode::Live).and_then(|| std::env::var_os("LIFECYCLE_RELOAD").is_some())).in_set(crate::clock::SimPhase::Gameplay))
+            .add_systems(Update, crate::npc_ownership_test::lifecycle_frame.after(rebuild_bodies).after(crate::npc_ownership_test::aspiration_frame).run_if(in_state(PlayMode::Live).and_then(|| std::env::var_os("LIFECYCLE_TEST").is_some())).in_set(crate::clock::SimPhase::Gameplay))
+            .add_systems(crate::clock::SimTick, crate::npc_ownership_test::lifecycle_after.after(crate::clock::TickPhase::Lifecycle).before(crate::clock::TickPhase::Commitments).run_if(|| std::env::var_os("LIFECYCLE_TEST").is_some()));
     }
+}
+
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum LifecyclePhase { Aging, Town, Holidays, Fame }
+
+/// Establish the loaded day's baseline even when the first live frame is paused.
+fn prepare_aging_day(clock: Res<GameClock>, mut day: ResMut<AgingDay>) {
+    if clock.restored || day.0.is_none() { day.0 = Some(clock.day()); }
 }
 
 /// Days lived in the current stage and persistent old-age survival state.
@@ -349,8 +365,8 @@ fn daily_aging(
     mut notes: ResMut<Notifications>,
 ) {
     let day = clock.day();
-    let first = last_day.0.is_none();
-    if last_day.0.replace(day) == Some(day) || first {
+    // A rewind establishes a baseline; it is never another birthday.
+    if last_day.0.replace(day).is_none_or(|previous| day <= previous) {
         return;
     }
     if !settings.aging {
