@@ -38,7 +38,12 @@ pub struct ReactionsPlugin;
 
 impl Plugin for ReactionsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<Spectacle>().add_systems(Update, (smelly_about, accidents, deaths, on_moodlets, weather, play, turn, seated).chain().run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay));
+        app.add_message::<Spectacle>()
+            .init_resource::<crate::life::PendingEvents<Spectacle>>()
+            // Added<Dying> must be observed even if a paused frame has no ticks.
+            .add_systems(Update, (crate::life::capture_events::<Spectacle>, deaths).chain().run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Prepare))
+            .add_systems(OnExit(crate::AppState::InGame), crate::life::clear_events::<Spectacle>)
+            .add_systems(crate::clock::SimTick, (smelly_about, crate::life::capture_events::<Spectacle>, accidents, on_moodlets, weather, play, turn, seated).chain().in_set(crate::life::WellbeingPhase::Reactions));
     }
 }
 
@@ -201,12 +206,12 @@ fn accidents(
     mut commands: Commands,
     clock: Res<GameClock>,
     sight: Sight,
-    mut seen: MessageReader<Spectacle>,
+    mut seen: ResMut<crate::life::PendingEvents<Spectacle>>,
     mut sims: Query<(Entity, &Sim, &Transform, Option<&Floor>, Option<&OnLot>, Option<&mut Moodlets>, Option<&Relationships>, &InheritedVisibility)>,
 ) {
     let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra1);
     let mut rng = rand::rng();
-    for s in seen.read() {
+    for s in &seen.take() {
         let Spectacle::Accident(who) = *s;
         let Ok((_, victim, tf, f, l, ..)) = sims.get(who) else { continue };
         let (there, child, loser) = (spot(tf, f, l), matches!(victim.age, Age::Child | Age::Toddler | Age::Baby), victim.traits.contains(&Trait::Loser));
@@ -477,10 +482,10 @@ fn seated(
 }
 
 /// Turning to face what they react to, as the reaction starts.
-fn turn(mut commands: Commands, time: Res<Time>, mut sims: Query<(Entity, &mut Transform, &Facing, &ActionQueue)>) {
+fn turn(mut commands: Commands, mut sims: Query<(Entity, &mut Transform, &Facing, &ActionQueue)>) {
     let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra7);
     for (e, mut tf, f, queue) in &mut sims {
-        tf.rotation = tf.rotation.slerp(f.0, (time.delta_secs() * 8.0).min(1.0));
+        tf.rotation = tf.rotation.slerp(f.0, (s3sim::time::STEP_NS as f32 / 1e9 * 8.0).min(1.0));
         let reacting = queue.0.front().is_some_and(|a| matches!(a.kind, ActionKind::Outro { .. }));
         if tf.rotation.angle_between(f.0) < 0.02 || !reacting {
             commands.entity(e).remove::<Facing>();

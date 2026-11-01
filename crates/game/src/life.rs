@@ -14,11 +14,52 @@ pub struct LifePlugin;
 
 impl Plugin for LifePlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<LifeEvent>().add_systems(
-            Update,
-            (need_moodlets, need_failures, life_events, expire_and_sum.after(crate::weather::sim_temperatures)).chain().run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay),
-        );
+        app.add_message::<LifeEvent>()
+            .init_resource::<PendingEvents<LifeEvent>>()
+            .configure_sets(crate::clock::SimTick, (WellbeingPhase::Needs, WellbeingPhase::Traits, WellbeingPhase::Reactions, WellbeingPhase::Sum).chain().in_set(crate::clock::TickPhase::Wellbeing))
+            .add_systems(Update, capture_events::<LifeEvent>.run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Prepare))
+            .add_systems(OnExit(crate::AppState::InGame), clear_events::<LifeEvent>)
+            .add_systems(crate::clock::SimTick, (need_moodlets, need_failures, capture_events::<LifeEvent>, life_events).chain().in_set(WellbeingPhase::Needs))
+            .add_systems(crate::clock::SimTick, expire_and_sum.in_set(WellbeingPhase::Sum));
+        #[cfg(local_validation)]
+        app.init_resource::<crate::npc_ownership_test::WellbeingProbe>()
+            .add_systems(Update, crate::npc_ownership_test::wellbeing_frame.in_set(crate::clock::SimPhase::Gameplay).run_if(in_state(PlayMode::Live).and_then(|| std::env::var_os("WELLBEING_TEST").is_some())));
     }
+}
+
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum WellbeingPhase { Needs, Traits, Reactions, Sum }
+
+/// One cursor shared by frame ingress and tick ingress prevents duplicate delivery.
+/// Queued events survive arbitrarily many paused frames; this queue is session-local.
+#[derive(Resource)]
+pub(crate) struct PendingEvents<T: Message> {
+    cursor: bevy::ecs::message::MessageCursor<T>,
+    events: Vec<T>,
+}
+
+impl<T: Message> Default for PendingEvents<T> {
+    fn default() -> Self { Self { cursor: Default::default(), events: Vec::new() } }
+}
+
+pub(crate) fn capture_events<T: Message + Clone>(messages: Res<Messages<T>>, clock: Res<GameClock>, mut pending: ResMut<PendingEvents<T>>) {
+    let pending = &mut *pending;
+    // A load replaces residents/state before Prepare. Never replay old-world effects.
+    if clock.restored {
+        pending.events.clear();
+        pending.cursor.clear(&messages);
+        return;
+    }
+    pending.events.extend(pending.cursor.read(&messages).cloned());
+}
+
+pub(crate) fn clear_events<T: Message>(messages: Res<Messages<T>>, mut pending: ResMut<PendingEvents<T>>) {
+    pending.events.clear();
+    pending.cursor.clear(&messages);
+}
+
+impl<T: Message> PendingEvents<T> {
+    pub(crate) fn take(&mut self) -> Vec<T> { std::mem::take(&mut self.events) }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1469,12 +1510,12 @@ pub struct SoreLater;
 fn life_events(
     mut commands: Commands,
     clock: Res<GameClock>,
-    mut events: MessageReader<LifeEvent>,
+    mut events: ResMut<PendingEvents<LifeEvent>>,
     mut q: Query<(&Sim, &Motives, &mut Moodlets, &Skills, Has<SoreLater>)>,
 ) {
     let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::LifeEvents);
     let now = clock.minutes;
-    for ev in events.read() {
+    for ev in &events.take() {
         let Ok((sim, m, mut ml, skills, sore_later)) = q.get_mut(ev.sim) else { continue };
         // (Overdone a workout, they wake up sore: the game's `AddSoreBuff`, granted after
         // sleeping.)

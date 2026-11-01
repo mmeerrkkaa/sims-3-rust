@@ -18,6 +18,9 @@ bounded catch-up, saved simulation time debt, and human and pet animation clocks
 by simulation ticks with interpolated poses. Pet needs, roaming, greetings, training
 and horse riding also use ordered simulation phases. Conversation decisions, listening,
 seated chatter, facial expressions and idle animations run on simulation ticks.
+Weather, body temperature, mood updates and reaction playback also use fixed phases;
+frame ingress retains life/social events while paused. Death detection still runs
+once per frame, and pending event queues are not yet part of saved games.
 Remaining gameplay systems, navigation and background residents
 are still being migrated. Performance gains are measured as each subsystem changes.
 

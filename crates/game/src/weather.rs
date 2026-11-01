@@ -12,7 +12,6 @@ use bevy::prelude::*;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 
-use crate::PlayMode;
 use crate::clock::GameClock;
 
 pub struct WeatherPlugin;
@@ -22,7 +21,7 @@ impl Plugin for WeatherPlugin {
         app.init_resource::<Weather>()
             .add_message::<Thunder>()
             .add_plugins(crate::weather_fx::WeatherFxPlugin)
-            .add_systems(Update, (simulate, sim_temperatures).chain().after(crate::clock::advance_clock).after(crate::save::apply_loaded_game).run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Gameplay));
+            .add_systems(crate::clock::SimTick, (simulate, sim_temperatures).chain().in_set(crate::clock::TickPhase::Environment));
     }
 }
 

@@ -30,7 +30,11 @@ pub struct TraitMoodsPlugin;
 
 impl Plugin for TraitMoodsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<Socialised>().add_systems(Update, (trait_moods, social_moods).run_if(in_state(PlayMode::Live)));
+        app.add_message::<Socialised>()
+            .init_resource::<crate::life::PendingEvents<Socialised>>()
+            .add_systems(Update, crate::life::capture_events::<Socialised>.run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Prepare))
+            .add_systems(OnExit(crate::AppState::InGame), crate::life::clear_events::<Socialised>)
+            .add_systems(crate::clock::SimTick, (trait_moods, crate::life::capture_events::<Socialised>, social_moods).chain().in_set(crate::life::WellbeingPhase::Traits));
     }
 }
 
@@ -77,8 +81,7 @@ pub const RAISE_LUCK: (f64, f64) = (2.0, 0.5);
 
 #[allow(clippy::type_complexity)]
 fn trait_moods(
-    time: Res<Time>,
-    mut last: Local<f32>,
+    mut last: Local<Option<u64>>,
     mut slept: Local<HashMap<Entity, f64>>,
     clock: Res<crate::clock::GameClock>,
     building: Option<Res<crate::building::ActiveBuilding>>,
@@ -91,11 +94,11 @@ fn trait_moods(
     >,
 ) {
     let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra52);
-    let now = time.elapsed_secs();
-    if now - *last < 1.0 {
-        return;
-    }
-    *last = now;
+    let now = clock.timeline.ticks;
+    // Thirty wall-time simulation steps preserve the previous one-second cadence
+    // at every game speed, while pause and render-only frames perform no scans.
+    if last.is_some_and(|previous| now >= previous && now - previous < 30) { return; }
+    *last = Some(now);
     let where_is = |p: Vec3| {
         building.as_deref().map(|b| {
             let level = b.level_at(p.y + 0.3);
@@ -227,10 +230,10 @@ fn keep(m: &mut Mut<Moodlets>, kind: MoodletKind, now: f64) {
 
 /// Socials' moodlets for the traits that feel them: an Excitable Sim's excitement, a Great
 /// Kisser's kiss.
-fn social_moods(clock: Res<crate::clock::GameClock>, mut done: MessageReader<Socialised>, mut sims: Query<(&Sim, &mut Moodlets, Option<&crate::social::Relationships>)>) {
+fn social_moods(clock: Res<crate::clock::GameClock>, mut done: ResMut<crate::life::PendingEvents<Socialised>>, mut sims: Query<(&Sim, &mut Moodlets, Option<&crate::social::Relationships>)>) {
     let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Extra53);
     let mut rng = rand::rng();
-    for s in done.read() {
+    for s in &done.take() {
         let Ok([(a, _, rels), (b, ..)]) = sims.get_many([s.actor, s.target]) else { continue };
         let rel = rels.map(|r| r.get(s.target)).unwrap_or_default();
         let excited = a.traits.contains(&Trait::Excitable)
