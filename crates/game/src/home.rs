@@ -952,6 +952,7 @@ pub fn move_in(
             Visibility::Hidden,
             crate::interact::OffLot,
             crate::town::Townie { next_walk: 8.0 * 60.0 + 5.0 + k as f64 * 37.0, walking: false },
+            Skills::default(),
             DespawnOnExit(AppState::InGame),
         ));
     }

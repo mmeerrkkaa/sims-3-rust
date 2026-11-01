@@ -145,6 +145,7 @@ mod rabbitholes;
 mod relations;
 mod roads;
 mod save;
+mod residents;
 mod sim;
 mod simpanel;
 mod sound;

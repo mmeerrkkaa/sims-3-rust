@@ -115,6 +115,7 @@ pub struct Weather {
     pub since: f64,
     pub until: f64,
     /// Now (°F).
+    #[serde(deserialize_with = "deserialize_temperature")]
     pub temperature: f32,
     /// Where between the season's lows and highs today's temperatures run (0..1), and the day
     /// it was chosen for.
@@ -138,6 +139,12 @@ pub struct Weather {
     pub last: f64,
     /// When heavy snow last fell (game minutes; the game's `LastHeavySnowTime`).
     pub last_heavy_snow: Option<f64>,
+}
+
+/// A paused new world has no measured temperature yet. JSON represents the
+/// NaN initialization sentinel as null; loading must retain that uninitialized state.
+fn deserialize_temperature<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<f32, D::Error> {
+    Ok(Option::<f32>::deserialize(deserializer)?.unwrap_or(f32::NAN))
 }
 
 impl Default for Weather {
@@ -765,5 +772,22 @@ mod tests {
         assert_eq!(w.season(27), Season::Spring);
         assert_eq!(w.season(28), Season::Summer);
         assert_eq!(w.season_day(9), 3);
+    }
+}
+
+
+#[cfg(test)]
+mod persistence_tests {
+    use super::*;
+    #[test]
+    fn paused_uninitialized_weather_roundtrips_before_its_first_simulation_tick() {
+        let saved = serde_json::to_vec(&Weather::default()).unwrap();
+        let restored: Weather = serde_json::from_slice(&saved).unwrap();
+        assert!(restored.temperature.is_nan());
+        let mut weather = Weather::default(); weather.temperature = 73.25;
+        let restored: Weather = serde_json::from_slice(&serde_json::to_vec(&weather).unwrap()).unwrap();
+        assert_eq!(restored.temperature, 73.25);
+        let old: Weather = serde_json::from_str("{}").unwrap();
+        assert!(old.temperature.is_nan());
     }
 }

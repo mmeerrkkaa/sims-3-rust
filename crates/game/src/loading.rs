@@ -210,6 +210,8 @@ pub fn start_loading(
         .as_ref()
         .map(|s| s.0.known_sims())
         .or_else(|| carry.as_ref().filter(|c| !c.known.is_empty()).map(|c| c.known.iter().map(crate::save::SaveGame::sim).collect()));
+    let background: Vec<crate::sim::Sim> = save.as_ref().map(|save| save.0.sims.iter()
+        .filter(|s| !s.member && s.background.is_some()).map(crate::save::SaveGame::sim).collect()).unwrap_or_default();
     // The town as the save (or the game changed over from) left it, and the households played
     // before, living their lives about town.
     let story: crate::story::TownStory = save.as_ref().map(|s| s.0.town.clone()).or_else(|| carry.as_ref().map(|c| c.town.clone())).unwrap_or_default();
@@ -304,6 +306,15 @@ pub fn start_loading(
             let premades = crate::premade::TownPremades(p.clone());
             town.extend(premades.others(playing).into_iter().filter(|s| !gone.contains(&s.id)).map(crate::premade::to_sim).filter_map(|s| story.apply(s)));
         }
+        let former_ids: std::collections::HashSet<_> = town.iter().filter(|s| gone.contains(&s.id)).map(|s| s.id).collect();
+        for sim in &mut town {
+            if !former_ids.contains(&sim.id) && let Some(resident) = story.residents.records.get(&sim.id)
+                && resident.checkpoint_at.is_some() && !resident.state.member {
+                *sim = crate::save::SaveGame::sim(&resident.state);
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        let town: Vec<_> = background.into_iter().chain(town).filter(|s| seen.insert(s.id)).filter_map(|s| story.apply(s)).collect();
         let sims = crate::simbody::prepare_sims(&baked, &cas, &members, known.as_deref(), &town);
         let info = WorldInfo {
             lot_names: world.lots.iter().map(|l| l.display_name.clone()).collect(),

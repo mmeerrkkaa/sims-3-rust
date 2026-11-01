@@ -44,7 +44,7 @@ impl Plugin for PerfPlugin {
         let path = Path::new(&path);
         let writer = csv_file(
             path,
-            "elapsed_s,state,mode,speed,sims,objects,frames,window_s,fps,frame_mean_ms,frame_p95_ms,frame_max_ms,update_mean_ms,game_minutes_per_real_s,focused,width,height,present_mode,stress_sims,stress_with_queue,stress_walking,topic_dispatch_last_frame,topic_pending,topic_oldest_delay_ticks,sim_steps_last_frame,sim_debt_real_s,sim_debt_game_min,sim_ticks_total",
+            "elapsed_s,state,mode,speed,sims,objects,frames,window_s,fps,frame_mean_ms,frame_p95_ms,frame_max_ms,update_mean_ms,game_minutes_per_real_s,focused,width,height,present_mode,stress_sims,stress_with_queue,stress_walking,topic_dispatch_last_frame,topic_pending,topic_oldest_delay_ticks,sim_steps_last_frame,sim_debt_real_s,sim_debt_game_min,sim_ticks_total,resident_records,resident_checkpoints",
         );
         let writer = match writer {
             Ok(writer) => writer,
@@ -132,6 +132,7 @@ fn finish_update(
     stress: Query<(&crate::interact::ActionQueue, Option<&crate::nav::PathFollow>), With<crate::population_stress::StressSim>>,
     topics: Res<crate::topics::TopicWorkload>,
     ticks: Res<crate::clock::TickWorkload>,
+    story: Res<crate::story::TownStory>,
 ) {
     let update_ms = recording.update_start.elapsed().as_secs_f64() * 1000.0;
     let r = &mut *recording;
@@ -178,7 +179,7 @@ fn finish_update(
     let result = (|| -> std::io::Result<()> {
         writeln!(
             writer,
-            "{:.3},{:?},{:?},{},{},{},{},{:.6},{:.3},{:.3},{:.3},{:.3},{:.3},{:.6},{},{},{},{:?},{},{},{},{},{},{},{},{:.6},{:.6},{}",
+            "{:.3},{:?},{:?},{},{},{},{},{:.6},{:.3},{:.3},{:.3},{:.3},{:.3},{:.6},{},{},{},{:?},{},{},{},{},{},{},{},{:.6},{:.6},{},{},{}",
             start.duration_since(r.origin).as_secs_f64(),
             key.0,
             key.1,
@@ -201,7 +202,8 @@ fn finish_update(
             stress.iter().filter(|(q,_)| !q.0.is_empty()).count(),
             stress.iter().filter(|(_,p)| p.is_some_and(|p| !p.done)).count(),
             topics.batch, topics.pending, topics.oldest_delay,
-            ticks.steps, ticks.pending_seconds, ticks.pending_minutes, clock.timeline.ticks
+            ticks.steps, ticks.pending_seconds, ticks.pending_minutes, clock.timeline.ticks,
+            story.residents.records.len(), story.residents.records.values().filter(|r| r.checkpoint_at.is_some()).count()
         )?;
         writer.flush()
     })();

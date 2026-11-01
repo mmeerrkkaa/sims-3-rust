@@ -24,8 +24,12 @@ pub struct StoryPlugin;
 impl Plugin for StoryPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<TownStory>()
-            .add_systems(Update, (prepare_story, merge_created).chain().run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Prepare))
-            .add_systems(crate::clock::SimTick, (merge_created, progress, read_the_news).chain().in_set(crate::aging::LifecyclePhase::Town));
+            .add_systems(Update, (prepare_story, merge_created, crate::residents::seed_residents).chain().run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Prepare))
+            .add_systems(crate::clock::SimTick, (merge_created, crate::residents::seed_residents, progress, read_the_news).chain().in_set(crate::aging::LifecyclePhase::Town));
+        #[cfg(local_validation)]
+        app.init_resource::<crate::npc_ownership_test::ResidentStoreProbe>()
+            .add_systems(Update, crate::npc_ownership_test::resident_store_frame.in_set(crate::clock::SimPhase::Gameplay).run_if(in_state(PlayMode::Live).and_then(|| std::env::var_os("RESIDENT_STORE_TEST").is_some())))
+            .add_systems(Update, crate::npc_ownership_test::resident_store_reload.in_set(crate::clock::SimPhase::Gameplay).run_if(in_state(PlayMode::Live).and_then(|| std::env::var_os("RESIDENT_STORE_RELOAD").is_some())));
     }
 }
 
@@ -46,6 +50,9 @@ pub struct TownStory {
     /// Persistent decisions keyed by resident ID, independent of ECS entity lifetimes.
     #[serde(default)]
     pub conversations: s3sim::ConversationPlans,
+    /// City checkpoints do not imply that every resident owns a rendered actor.
+    #[serde(default)]
+    pub residents: s3sim::residents::Residents<crate::save::SavedSim>,
     /// The last day the town completed; pending days remain until processed.
     pub day: u32,
     /// Distinguishes a real day zero from the legacy uninitialized sentinel.
@@ -533,6 +540,9 @@ fn progress(
             commands.entity(e).try_despawn();
         }
     }
+    let active: std::collections::HashSet<_> = members.iter().map(|(s, _)| s.id)
+        .chain(dormant.member_ids()).chain(spawned.iter().map(|(_, s, _)| s.id)).collect();
+    crate::residents::sync_background(&mut story, &active);
     info!("story progression: {days} day(s), {} news", story.news.len());
 }
 
@@ -568,7 +578,7 @@ fn read_the_news(mut commands: Commands, story: Res<TownStory>, sims: Query<(Ent
 }
 
 /// A career by its name, or by the class the world files name it by (`LawEnforcement`).
-fn track(name: &str) -> Option<&'static crate::careers::CareerTrack> {
+pub(crate) fn track(name: &str) -> Option<&'static crate::careers::CareerTrack> {
     let all = crate::careers::careers();
     all.iter().find(|c| c.name == name).or_else(|| crate::premade::career_of(name).and_then(|i| all.get(i)))
 }

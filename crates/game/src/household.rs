@@ -43,6 +43,8 @@ impl Dormant {
             .iter()
             .filter_map(|d| {
                 let mut d = d.clone();
+                // The current world owns the city registry, not each dormant household.
+                d.town.residents.records.clear();
                 d.sims.retain(|s| !(s.member && playing.contains(&s.id)));
                 d.sims.iter().any(|s| s.member).then(|| {
                     someone_selected(&mut d);
@@ -141,7 +143,7 @@ pub fn move_in_town(mut game: SaveGame, newcomers: &[u64]) -> CarryOver {
 
 /// A Sim of another household, as one the household knows (living elsewhere, at home).
 fn known_as(s: &SavedSim) -> SavedSim {
-    SavedSim { member: false, selected: false, whereabouts: "away".into(), world_location: None, lot_role: None, ..s.clone() }
+    SavedSim { member: false, selected: false, whereabouts: "away".into(), world_location: None, lot_role: None, background: None, ..s.clone() }
 }
 
 /// The Sims of `other` (a household played before) that `game`'s household knows: kept in
@@ -180,6 +182,7 @@ fn the_town_as_it_is(mut commands: Commands, save: Option<Res<crate::save::Pendi
         (None, Some(c)) => (c.town.clone(), c.dormant.clone()),
         (None, None) => Default::default(),
     };
+    commands.remove_resource::<crate::residents::RestoreResidents>();
     commands.insert_resource(story);
     dormant.0 = d;
 }
@@ -323,7 +326,10 @@ fn switch_over(
             let Some(h) = town.as_ref().and_then(|t| t.0.households.iter().find(|h| h.id == id)).cloned() else { return };
             let ids: Vec<u64> = h.members.iter().map(|m| m.id).collect();
             let carry = move_in_town(game, &ids);
-            let members: Vec<Sim> = h.members.iter().filter(|m| !m.first_name.is_empty()).map(crate::premade::to_sim).filter_map(|s| carry.town.apply(s)).collect();
+            let members: Vec<Sim> = h.members.iter().filter(|m| !m.first_name.is_empty()).map(|m| {
+                carry.town.residents.records.get(&m.id).filter(|r| r.checkpoint_at.is_some())
+                    .map_or_else(|| crate::premade::to_sim(m), |r| SaveGame::sim(&r.state))
+            }).filter_map(|s| carry.town.apply(s)).collect();
             info!("changing household: from the {from} household to the {} household (moving in)", h.name);
             commands.insert_resource(crate::home::PendingHousehold { last_name: h.name.clone(), members, premade: Some(h), ties: Vec::new(), pets: Vec::new() });
             commands.remove_resource::<crate::save::PendingLoad>();
@@ -336,7 +342,7 @@ fn switch_over(
 /// A town family moved in (and their own ties made): the game goes on from where it was, with
 /// the town's story and family tree, and the households played before as they knew them.
 #[allow(clippy::type_complexity)]
-fn carry_over(
+pub(crate) fn carry_over(
     mut commands: Commands,
     carry: Option<Res<CarryOver>>,
     choice: Option<Res<crate::premade::PremadeChoice>>,
@@ -360,6 +366,14 @@ fn carry_over(
     let people = c.family.clone();
     commands.queue(move |w: &mut World| w.resource_mut::<crate::family::Genealogy>().restore(&people));
     dormant.0 = c.dormant.clone();
+    let live_ids: std::collections::HashSet<_> = sims.iter().map(|s| s.1.id).collect();
+    let mut checkpoints: std::collections::BTreeMap<_, _> = c.town.residents.records.iter()
+        .filter(|(id, r)| r.checkpoint_at.is_some() && live_ids.contains(id)).map(|(id, r)| (*id, r.state.clone())).collect();
+    // Played households own their state; a stale city checkpoint cannot override them.
+    for snapshot in c.dormant.iter().flat_map(|d| d.sims.iter().filter(|s| s.member)) {
+        if live_ids.contains(&snapshot.id) { checkpoints.insert(snapshot.id, snapshot.clone()); }
+    }
+    commands.insert_resource(crate::residents::RestoreResidents(checkpoints.into_values().collect()));
     // Who knew whom, both ways.
     let by_id: HashMap<u64, Entity> = sims.iter().map(|q| (q.1.id, q.0)).collect();
     let mut links = Vec::new();

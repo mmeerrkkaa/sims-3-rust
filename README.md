@@ -30,6 +30,9 @@ independent event subscribers retain paused happenings without consuming each ot
 Household aging, town story progression, holidays and celebrity progression now use
 ordered tick phases, while body rebuilding stays in frame presentation. Town day
 catch-up retains pending days; holiday delivery markers are included in saves.
+City profiles and personal checkpoints are now stored by stable resident ID separately
+from model preparation. Unmet background residents and street walks survive saves;
+loading keeps a small background actor cohort. Full live simulation tiers remain planned.
 Remaining gameplay systems, navigation and background residents
 are still being migrated. Performance gains are measured as each subsystem changes.
 

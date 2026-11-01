@@ -35,6 +35,7 @@ impl Plugin for SavePlugin {
             })
             .add_systems(Update, (restore_broken, restore_states).after(apply_loaded_game).run_if(in_state(PlayMode::Live)))
             .add_systems(Update, resume_saved_lot.run_if(in_state(PlayMode::ChooseLot)))
+            .add_systems(Update, crate::residents::restore_arrivals.after(crate::household::carry_over).after(apply_loaded_game).run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Restore))
             .add_systems(Update, (apply_loaded_game.in_set(crate::clock::SimPhase::Restore).after(crate::clock::advance_clock), save_game.in_set(crate::clock::SimPhase::Save).after(crate::buyhistory::update)).run_if(in_state(PlayMode::Live)));
     }
 }
@@ -67,6 +68,8 @@ pub struct SavedSim {
     pub world_location: Option<s3sim::residents::WorldLocation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lot_role: Option<s3sim::residents::LotRole>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background: Option<s3sim::residents::BackgroundState>,
     pub position: [f32; 3],
     pub yaw: f32,
     pub floor: u8,
@@ -685,6 +688,7 @@ pub(crate) fn saved_look(sim: &Sim) -> SavedSim {
         whereabouts: "away".into(),
         world_location: None,
         lot_role: None,
+        background: None,
         position: [0.0; 3],
         yaw: 0.0,
         floor: 1,
@@ -818,7 +822,7 @@ impl SaveGame {
 
     /// Sims the household knows (visitors and friends living elsewhere).
     pub fn known_sims(&self) -> Vec<Sim> {
-        self.sims.iter().filter(|s| !s.member).map(Self::sim).collect()
+        self.sims.iter().filter(|s| !s.member && s.background.is_none()).filter_map(|s| self.town.apply(Self::sim(s))).collect()
     }
 
     pub fn file_name(&self) -> String {
@@ -909,7 +913,11 @@ pub fn list_saves() -> Vec<(PathBuf, SaveGame)> {
             if p.extension()? != "json" {
                 return None;
             }
-            let g: SaveGame = serde_json::from_slice(&std::fs::read(&p).ok()?).ok()?;
+            let bytes = std::fs::read(&p).ok()?;
+            let g: SaveGame = match serde_json::from_slice(&bytes) {
+                Ok(game) => game,
+                Err(error) => { warn!("cannot read save {}: {error}", p.display()); return None; }
+            };
             let t = e.metadata().ok()?.modified().ok()?;
             Some((p, g, t))
         })
@@ -1040,23 +1048,25 @@ fn save_game(
                     Option<&crate::classes::ClassesTaken>,
                     Option<&crate::skillbooks::SkillBooks>,
                     (Option<&crate::novels::Novels>, Has<crate::computertraits::BookClub>, Option<&crate::timeoff::TimeOff>, Option<&crate::charity::Charities>),
-                    Has<crate::town::Townie>,
+                    Option<&crate::town::Townie>,
+                    Option<&crate::nav::PathFollow>,
                     Option<&crate::visit::LotGuest>,
                 ),
             ),
         ),
         Without<crate::services::ServiceNpc>,
     >,
-    (bought, _exit, graves, ghosts): (
+    (bought, _exit, graves, ghosts, pending_rels): (
         Query<(&GameObject, &Transform, Option<&crate::objects::Design>, Option<&crate::paintings::Hung>), With<Bought>>,
         Option<Res<crate::interact::LotExit>>,
         Query<(Entity, &crate::ghosts::Grave, &Transform), Without<crate::buyhistory::HistoryHidden>>,
         Query<(Entity, &Sim, &crate::ghosts::Ghost, &Relationships)>,
+        Option<Res<crate::ghosts::PendingRels>>,
     ),
     ui: Option<Res<crate::icons::GameUi>>,
     mut notes: ResMut<Notifications>,
-    (story, alarm, (bowls, terrariums), (leftovers, fridge, real_estate), weather, pets, pet_data): (
-        Res<crate::story::TownStory>,
+    (mut story, alarm, (bowls, terrariums), (leftovers, fridge, real_estate), weather, pets, pet_data): (
+        ResMut<crate::story::TownStory>,
         Res<crate::appliances::Alarm>,
         (
             Query<(&crate::fishbowl::BowlFish, &Transform), (Without<crate::visit::LotObject>, Without<crate::buyhistory::HistoryHidden>)>,
@@ -1093,13 +1103,22 @@ fn save_game(
     let Some(hh) = household else { return };
     // (The ghosts too: whom the living know among the dead.)
     let ids: HashMap<Entity, u64> = sims.iter().map(|q| (q.0, q.1.id)).chain(ghosts.iter().map(|g| (g.0, g.1.id))).collect();
-    // Background passers-by are kept when known. Active lot actors are saved even if unmet.
-    let known: std::collections::HashSet<Entity> = sims.iter().filter(|q| q.9).flat_map(|q| q.8.0.keys().copied()).collect();
-    let mut saved = Vec::new();
-    for (e, sim, tf, floor, motives, skills, moodlets, job, rels, member, selected, away, visiting, wishes, (aging, pregnancy, opps, out, ltw, author, recipes, chess, inventory, toddler, pension, journal, school, homework, (rabbit, temperature, wearing, outfit_chosen, staged, classes, books, (novels, book_club, time_off, charities), townie, guest))) in &sims {
-        if townie && !known.contains(&e) {
-            continue;
+    // A cold resident has no Entity to put into Relationships yet. Those stable-ID
+    // links live in PendingRels and must survive another save before materialization.
+    let mut unresolved: HashMap<Entity, Vec<&SavedRel>> = HashMap::new();
+    if let Some(pending) = &pending_rels {
+        for (owner, relationship) in &pending.0 { unresolved.entry(*owner).or_default().push(relationship); }
+    }
+    let checkpoint_rels = |owner: Entity, rels: &Relationships| {
+        let mut rows = saved_rels(rels, &ids);
+        if let Some(pending) = unresolved.get(&owner) {
+            let mut present: std::collections::HashSet<_> = rows.iter().map(|r| r.with).collect();
+            rows.extend(pending.iter().filter(|r| present.insert(r.with)).map(|r| (*r).clone()));
         }
+        rows
+    };
+    let mut saved = Vec::new();
+    for (e, sim, tf, floor, motives, skills, moodlets, job, rels, member, selected, away, visiting, wishes, (aging, pregnancy, opps, out, ltw, author, recipes, chess, inventory, toddler, pension, journal, school, homework, (rabbit, temperature, wearing, outfit_chosen, staged, classes, books, (novels, book_club, time_off, charities), townie, street_path, guest))) in &sims {
         if let Some(s) = staged {
             debug!("saving {} during portrait: scene {:?}, gameplay {:?}", sim.first, tf.translation, s.original.translation);
         }
@@ -1123,6 +1142,12 @@ fn save_game(
             whereabouts: if member { "home" } else if away { "away" } else if visiting { "visiting" } else { "away" }.into(),
             world_location: crate::visit::saved_location(&world.data, out.0, out.1, rabbit),
             lot_role: if out.2 { Some(s3sim::residents::LotRole::Resident) } else { guest.map(|g| s3sim::residents::LotRole::Guest { leave_at: s3sim::tick_at(g.leave_at) }) },
+            background: townie.filter(|_| !member).map(|t| s3sim::residents::BackgroundState {
+                next_walk: t.next_walk,
+                walk: street_path.filter(|p| t.walking && !p.done).and_then(|p| p.waypoints.last().map(|w| s3sim::residents::StreetWalk {
+                    destination: w.p.to_array(), speed: p.speed, jogging: p.style == crate::nav::WalkStyle::Jog,
+                })),
+            }),
             position,
             yaw: tf.rotation.to_euler(EulerRot::YXZ).0,
             floor: level,
@@ -1143,7 +1168,7 @@ fn save_game(
                 warned_at: j.warned_at,
                 tally: j.tally.clone(),
             }),
-            relationships: saved_rels(rels, &ids),
+            relationships: checkpoint_rels(e, rels),
             lifetime_happiness: wishes.map_or(0, |w| w.points),
             happiness_fraction: wishes.map_or(0.0, |w| w.mood_fraction),
             body_temperature: temperature.copied().unwrap_or_default(),
@@ -1201,6 +1226,12 @@ fn save_game(
             face_presets: sim.face_presets.clone(),
             occult: sim.occult.map(|o| o.name().to_string()),
         });
+    }
+    for resident in &saved {
+        story.residents.checkpoint(resident.id, resident.clone(), s3sim::tick_at(clock.minutes));
+        if resident.member && let Some(home) = world.data.lots.get(hh.lot_index) {
+            story.residents.records.get_mut(&resident.id).unwrap().home = Some(home.id);
+        }
     }
     let game = SaveGame {
         broken_objects: broken.iter().filter(|b| b.2).map(|(o, tf, _, charred, ..)| SavedBroken { objd: o.objd, position: tf.translation.to_array(), charred }).collect(),
@@ -1269,7 +1300,7 @@ fn save_game(
             .iter()
             .map(|(ge, g, tf)| {
                 // (Whom the ghost knows, kept with its grave.)
-                let known = ghosts.iter().find(|x| x.2.grave == ge).map_or_else(|| g.known.clone(), |x| saved_rels(x.3, &ids));
+                let known = ghosts.iter().find(|x| x.2.grave == ge).map_or_else(|| g.known.clone(), |x| checkpoint_rels(x.0, x.3));
                 SavedGrave { position: tf.translation.to_array(), rotation: tf.rotation.to_array(), cause: g.cause.clone(), sim: SavedSim { relationships: known, ..saved_look(&g.sim) }, epitaph: g.epitaph.clone() }
             })
             .collect(),
@@ -1363,60 +1394,20 @@ fn restore_school(ec: &mut EntityCommands, saved: &SavedSim) {
     }
 }
 
-/// Once the household is in, restores everything the save remembers.
-#[allow(clippy::type_complexity, clippy::too_many_arguments)]
-pub(crate) fn apply_loaded_game(
-    mut commands: Commands,
-    pending: Option<Res<PendingLoad>>,
-    mut clock: ResMut<GameClock>,
-    mut delta: ResMut<crate::clock::SimDelta>,
-    mut household: Option<ResMut<Household>>,
-    mut removed: ResMut<RemovedLotObjects>,
-    mut sims: Query<
-        (Entity, &mut Sim, &mut Transform, &mut Floor, &mut Motives, &mut Skills, &mut Moodlets, &mut Relationships),
-        (Without<crate::town::Townie>, Without<GameObject>),
-    >,
-    objects: Query<(Entity, &GameObject, &Transform), (Without<Bought>, Without<Sim>)>,
-    (data, catalog, mut assets): (Res<crate::baked::Baked>, Res<Catalog>, ResMut<crate::objects::ObjectAssets>),
-    (mut meshes, mut images, mut mats): (ResMut<Assets<Mesh>>, ResMut<Assets<Image>>, ResMut<Assets<StandardMaterial>>),
-    (mut building, mut faces): (Option<ResMut<crate::building::ActiveBuilding>>, Query<(&crate::building::WallFace, &mut MeshMaterial3d<StandardMaterial>)>),
-    mut grid: Option<ResMut<crate::nav::NavGrid>>,
-    (mut notes, world): (ResMut<Notifications>, Res<crate::loading::CurrentWorld>),
-) {
-    let Some(p) = pending else { return };
-    if household.is_none() || sims.is_empty() {
-        return;
-    }
-    let game = &p.0;
-    clock.minutes = game.minutes;
-    clock.timeline = game.timeline.clone();
-    clock.restored = true;
-    // The clock was replaced, so this frame's pre-load elapsed time must not
-    // advance restored temperature, recovery timers, or other simulation state.
-    delta.0 = 0.0;
-    commands.insert_resource(PendingBroken(game.broken_objects.clone(), None));
-    commands.insert_resource(PendingStates(game.object_states.clone(), None));
-    commands.insert_resource(crate::puddles::PendingPuddles(game.puddles.clone()));
-    commands.insert_resource(crate::laundry::PendingLaundry::of(game.laundry.clone()));
-    commands.insert_resource(crate::rgmmail::Posted(game.posted.clone()));
-    commands.insert_resource(crate::frontdoor::Doorbell(game.doorbell));
-    commands.insert_resource(crate::repoman::RepoDue { debt: game.repo_debt, arrive_at: None });
-    // A restored date is not a midnight tick, even when loading within a session.
-    commands.insert_resource(crate::aging::AgingDay::default());
-    commands.insert_resource(crate::interact::DepreciationDay::default());
-    if let Some(h) = household.as_mut() {
-        h.funds = game.funds;
-        h.last_bill_day = game.last_bill_day;
-        h.bills = game.bills.clone();
-        h.name = game.household.clone();
-    }
+pub(crate) type RestorePeople<'w, 's> = Query<'w, 's,
+    (Entity, &'static mut Sim, &'static mut Transform, &'static mut Floor, &'static mut Motives, &'static mut Skills, &'static mut Moodlets, &'static mut Relationships),
+    Without<GameObject>>;
+
+pub(crate) fn restore_people<'a>(commands: &mut Commands, minutes: f64, deck: bool, world: &CurrentWorld,
+    building: Option<&crate::building::ActiveBuilding>, sims: &mut RestorePeople,
+    snapshots: impl IntoIterator<Item = &'a SavedSim>) -> Vec<(Entity, SavedRel)> {
     let by_id: HashMap<u64, Entity> = sims.iter().map(|q| (q.1.id, q.0)).collect();
     let mut unmet: Vec<(Entity, SavedRel)> = Vec::new();
-    for s in &game.sims {
+    for s in snapshots {
         let Some(&e) = by_id.get(&s.id) else { continue };
         let Ok((_, _, mut tf, mut floor, mut motives, mut skills, mut moodlets, mut rels)) = sims.get_mut(e) else { continue };
-        tf.translation = match building.as_deref() {
-            Some(b) if !game.deck && s.floor <= 1 => crate::building::onto_deck(b, &world.data.heightmap, Vec3::from(s.position)),
+        tf.translation = match building {
+            Some(b) if !deck && s.floor <= 1 => crate::building::onto_deck(b, &world.data.heightmap, Vec3::from(s.position)),
             _ => Vec3::from(s.position),
         };
         tf.rotation = Quat::from_rotation_y(s.yaw);
@@ -1495,11 +1486,11 @@ pub(crate) fn apply_loaded_game(
         if let Some((since, other, stage)) = s.pregnancy {
             let other_parent = other.and_then(|o| by_id.get(&o).copied());
             // (The hours gone by aren't gone over again: what's due comes at the next.)
-            let hour = (((game.minutes - since) / 60.0).max(0.0) as u32).min(crate::little::HOURS_OF_PREGNANCY - 1);
+            let hour = (((minutes - since) / 60.0).max(0.0) as u32).min(crate::little::HOURS_OF_PREGNANCY - 1);
             let (girl_bias, kids_hours) = s.pregnancy_sway.unwrap_or_default();
             ec.insert(crate::little::Pregnancy { since, other_parent, stage, mood: s.pregnancy_mood.unwrap_or(0.0), hour, girl_bias, kids_hours });
             if stage >= 4 {
-                ec.insert(crate::little::Labour { next: game.minutes });
+                ec.insert(crate::little::Labour { next: minutes });
             }
         }
         match &s.job {
@@ -1528,19 +1519,19 @@ pub(crate) fn apply_loaded_game(
             let mut wishes = crate::wishes::Wishes::restored(
                 s.lifetime_happiness,
                 s.rewards.clone(),
-                game.minutes,
+                minutes,
             );
             wishes.mood_fraction = s.happiness_fraction.clamp(0.0, 1.0);
             wishes.offered = s.offered_wishes.clone();
             wishes.promised = s.promised_wishes.clone();
-            wishes.next_offer = s.next_wish_offer.unwrap_or(game.minutes);
+            wishes.next_offer = s.next_wish_offer.unwrap_or(minutes);
             wishes.dream_state = s.dream_state.clone();
             ec.insert(wishes);
         }
         if s.member {
             ec.insert(HouseholdMember).remove::<(Visitor, OffLot)>();
         } else if s.whereabouts == "visiting" {
-            ec.insert(Visitor { leave_at: game.minutes + 180.0 });
+            ec.insert(Visitor { leave_at: minutes + 180.0 });
         } else {
             ec.remove::<Visitor>().insert((OffLot, Visibility::Hidden));
         }
@@ -1549,8 +1540,62 @@ pub(crate) fn apply_loaded_game(
         } else {
             ec.remove::<Selected>();
         }
-        crate::visit::restore_location(&mut ec, &world.data, s, game.minutes);
+        crate::visit::restore_location(&mut ec, &world.data, s, minutes);
+        if !s.member && let Some(background) = &s.background {
+            crate::residents::restore_background(&mut ec, background);
+        }
     }
+    unmet
+}
+
+/// Once the household is in, restores everything the save remembers.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+pub(crate) fn apply_loaded_game(
+    mut commands: Commands,
+    pending: Option<Res<PendingLoad>>,
+    mut clock: ResMut<GameClock>,
+    mut delta: ResMut<crate::clock::SimDelta>,
+    mut household: Option<ResMut<Household>>,
+    mut removed: ResMut<RemovedLotObjects>,
+    mut sims: RestorePeople,
+    objects: Query<(Entity, &GameObject, &Transform), (Without<Bought>, Without<Sim>)>,
+    (data, catalog, mut assets): (Res<crate::baked::Baked>, Res<Catalog>, ResMut<crate::objects::ObjectAssets>),
+    (mut meshes, mut images, mut mats): (ResMut<Assets<Mesh>>, ResMut<Assets<Image>>, ResMut<Assets<StandardMaterial>>),
+    (mut building, mut faces): (Option<ResMut<crate::building::ActiveBuilding>>, Query<(&crate::building::WallFace, &mut MeshMaterial3d<StandardMaterial>)>),
+    mut grid: Option<ResMut<crate::nav::NavGrid>>,
+    (mut notes, world): (ResMut<Notifications>, Res<crate::loading::CurrentWorld>),
+) {
+    let Some(p) = pending else { return };
+    if household.is_none() || sims.is_empty() {
+        return;
+    }
+    let game = &p.0;
+    clock.minutes = game.minutes;
+    clock.timeline = game.timeline.clone();
+    clock.restored = true;
+    // The clock was replaced, so this frame's pre-load elapsed time must not
+    // advance restored temperature, recovery timers, or other simulation state.
+    delta.0 = 0.0;
+    commands.insert_resource(PendingBroken(game.broken_objects.clone(), None));
+    commands.insert_resource(PendingStates(game.object_states.clone(), None));
+    commands.insert_resource(crate::puddles::PendingPuddles(game.puddles.clone()));
+    commands.insert_resource(crate::laundry::PendingLaundry::of(game.laundry.clone()));
+    commands.insert_resource(crate::rgmmail::Posted(game.posted.clone()));
+    commands.insert_resource(crate::frontdoor::Doorbell(game.doorbell));
+    commands.insert_resource(crate::repoman::RepoDue { debt: game.repo_debt, arrive_at: None });
+    // A restored date is not a midnight tick, even when loading within a session.
+    commands.insert_resource(crate::aging::AgingDay::default());
+    commands.insert_resource(crate::interact::DepreciationDay::default());
+    if let Some(h) = household.as_mut() {
+        h.funds = game.funds;
+        h.last_bill_day = game.last_bill_day;
+        h.bills = game.bills.clone();
+        h.name = game.household.clone();
+    }
+    let saved_ids: std::collections::HashSet<_> = game.sims.iter().map(|s| s.id).collect();
+    let snapshots = game.sims.iter().chain(game.town.residents.records.iter()
+        .filter(|(id, r)| r.checkpoint_at.is_some() && !r.state.member && !saved_ids.contains(id)).map(|(_, r)| &r.state));
+    let unmet = restore_people(&mut commands, game.minutes, game.deck, &world, building.as_deref(), &mut sims, snapshots);
     // Furniture: take away what was sold, put back what was bought.
     // (By where it stood on the ground: the starter deck's furniture stands higher than it did
     // in older saves.)
