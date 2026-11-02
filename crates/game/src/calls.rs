@@ -34,7 +34,7 @@ pub struct PhonesSilenced(pub bool);
 /// The phone ringing for a Sim: who's calling, what for, and till when it rings.
 #[derive(Component, Clone, Copy, Debug)]
 pub struct Ringing {
-    pub caller: Entity,
+    pub caller: u64,
     pub invite: bool,
     pub until: f64,
     /// The caller's home in town (asked to hang out, it's theirs that's gone to).
@@ -98,6 +98,7 @@ fn place_calls(
     world: Res<crate::loading::CurrentWorld>,
     (town, story, dormant, household): (Option<Res<crate::premade::TownPremades>>, Res<crate::story::TownStory>, Res<crate::household::Dormant>, Option<Res<crate::interact::Household>>),
     silenced: Res<PhonesSilenced>,
+    (index,pending,graves):(Res<crate::residents::ResidentActors>,Res<crate::ghosts::PendingRels>,Query<&crate::ghosts::Grave>),
 ) {
     if silenced.0 {
         return;
@@ -125,16 +126,15 @@ fn place_calls(
     }
     let least = if kind == 2 { INVITE_LIKING } else { CHAT_LIKING };
     // (Who could call whom: the better they get on, the likelier.)
-    let mut pairs: Vec<(Entity, Entity, f32)> = Vec::new();
+    let mut pairs: Vec<(Entity, u64, f32)> = Vec::new();
     for (callee, sim, rels, q) in &callees {
         if !sim.age.is_grown() && sim.age != crate::sim::Age::Child || q.0.front().is_some_and(|a| a.label == "Sleep" || !a.autonomous) {
             continue;
         }
-        for (caller, csim) in &callers {
-            let liking = rels.friendship(caller);
-            if liking >= least && !csim.age.is_little() {
-                pairs.push((callee, caller, liking));
-            }
+        for contact in crate::residents::contacts(callee,rels,&pending,&index) {
+            if contact.relationship.friendship<least || graves.iter().any(|g|g.sim.id==contact.id) || !story.model(&contact.id).is_none_or(|m|m.present()) {continue;}
+            let person=match contact.actor {Some(e)=>callers.get(e).ok().map(|p|p.1.clone()),None=>crate::residents::contact_sim(&story,&dormant,contact.id)};
+            if person.is_some_and(|s|!s.age.is_little()) {pairs.push((callee,contact.id,contact.relationship.friendship));}
         }
     }
     let total: f32 = pairs.iter().map(|p| p.2).sum();
@@ -149,12 +149,14 @@ fn place_calls(
         return;
     };
     let Ok((_, sim, _, mut q)) = callees.get_mut(callee) else { return };
-    let (cname, cid) = callers.get(caller).map(|c| (c.1.first.clone(), c.1.id)).unwrap_or_default();
+    let cname=index.by_id.get(&caller).and_then(|e|callers.get(*e).ok()).map(|c|c.1.first.clone())
+        .or_else(||crate::residents::contact_sim(&story,&dormant,caller).map(|s|s.first)).unwrap_or_default();
+    let cid=caller;
     let home = (kind == 2).then(|| caller_home(&world, town.as_deref(), &story, &dormant, household.as_ref().map(|h| h.lot_index), cid)).flatten();
     info!("calls: {cname} rings {} ({})", sim.first, if kind == 2 { "to hang out" } else { "for a chat" });
     commands.entity(callee).insert(Ringing { caller, invite: kind == 2, until: now + RINGS_FOR, home, asked: false });
     // (Picked up at once, unless they're busy with something they were told to do.)
-    let answer = Action::new("Answer Phone", ActionKind::PhoneChat { target: caller }, false);
+    let answer = Action::new("Answer Phone", crate::residents::ResidentCall::Chat.action(caller), false);
     match q.0.front() {
         Some(a) if !a.autonomous => q.0.insert(1, answer),
         _ => {
@@ -179,19 +181,21 @@ fn answer_calls(
     clock: Res<GameClock>,
     mut ringing: Query<(Entity, &Sim, &mut Ringing, &mut ActionQueue)>,
     callers: Query<&Sim, Without<Ringing>>,
+    (index,story,dormant):(Res<crate::residents::ResidentActors>,Res<crate::story::TownStory>,Res<crate::household::Dormant>),
     mut questions: ResMut<crate::dialog::Questions>,
     ui: Option<Res<crate::layout::UiAssets>>,
     mut notes: ResMut<Notifications>,
 ) {
     for (e, sim, mut r, mut q) in &mut ringing {
         let answering = q.0.front().is_some_and(|a| a.label == "Answer Phone" && matches!(a.phase, Phase::Running(_)) && !a.cancel);
-        let caller = callers.get(r.caller).ok();
-        let cname = caller.map(|c| (c.first.clone(), c.full_name())).unwrap_or_default();
+        let caller = index.by_id.get(&r.caller).and_then(|e|callers.get(*e).ok()).cloned()
+            .or_else(||crate::residents::contact_sim(&story,&dormant,r.caller));
+        let cname = caller.as_ref().map(|c| (c.first.clone(), c.full_name())).unwrap_or_default();
         if !r.asked && answering {
             r.asked = true;
             commands.entity(e).insert(ANSWER);
             let words = |key: &str, plain: &str| ui.as_deref().and_then(|u| u.localize(&format!("Gameplay/Objects/Electronics/Phone:{key}"))).unwrap_or_else(|| plain.to_string());
-            let fill = |t: String| crate::layout::gendered(&t, caller.is_some_and(|c| c.female)).replace("{0.SimName}", &sim.full_name()).replace("{1.SimName}", &cname.1);
+            let fill = |t: String| crate::layout::gendered(&t, caller.as_ref().is_some_and(|c| c.female)).replace("{0.SimName}", &sim.full_name()).replace("{1.SimName}", &cname.1);
             let (text, yes, no) = if r.invite {
                 // (The game's: "I'll Come Over" to a caller with a home, else "At My Place".)
                 let yes = if r.home.is_some() { words("InvitationQueryYesOut", "I'll Come Over") } else { words("InvitationQueryYesIn", "At My Place") };
@@ -230,12 +234,14 @@ fn call_answers(
     mut answers: MessageReader<crate::dialog::Answered>,
     mut sims: Query<(&Sim, &mut ActionQueue)>,
     names: Query<&Sim>,
+    (index,story,dormant):(Res<crate::residents::ResidentActors>,Res<crate::story::TownStory>,Res<crate::household::Dormant>),
     mut notes: ResMut<Notifications>,
 ) {
     for a in answers.read() {
         let crate::dialog::Question::PhoneCall { sim, caller, invite, home } = a.about else { continue };
         commands.entity(sim).remove::<Ringing>();
-        let cname = names.get(caller).map(|c| c.first.clone()).unwrap_or_default();
+        let cname = index.by_id.get(&caller).and_then(|e|names.get(*e).ok()).map(|c|c.first.clone())
+            .or_else(||crate::residents::contact_sim(&story,&dormant,caller).map(|s|s.first)).unwrap_or_default();
         let Ok((me, mut q)) = sims.get_mut(sim) else { continue };
         let first = me.first.clone();
         let call = q.0.iter_mut().find(|x| x.label == "Answer Phone");
@@ -260,7 +266,7 @@ fn call_answers(
                     }
                     None => {
                         // (Someone strolling about town comes as a guest.)
-                        commands.entity(caller).remove::<(crate::town::Townie, crate::nav::PathFollow)>().insert((OffLot, Invited { arrive_at: clock.minutes + COMING_OVER }));
+                        if let Some(&entity)=index.by_id.get(&caller) {commands.entity(entity).remove::<(crate::town::Townie,crate::nav::PathFollow)>().insert((OffLot,Invited{arrive_at:clock.minutes+COMING_OVER}));}
                         notes.push(format!("{cname} is coming over to hang out with {first}."));
                     }
                 }

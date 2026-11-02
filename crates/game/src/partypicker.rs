@@ -44,7 +44,7 @@ const DOUBLE_CLICK: f32 = 0.4;
 
 /// A row of one of the tables: which table, whose.
 #[derive(Component)]
-pub(crate) struct PickRow(usize, Entity);
+pub(crate) struct PickRow(usize, u64);
 
 /// The picker on show, and what's chosen in it.
 #[derive(Default)]
@@ -56,13 +56,13 @@ pub(crate) struct Shown {
     /// The hour as typed (on the twelve-hour clock), and afternoon.
     typed: String,
     pm: bool,
-    invitees: Vec<Entity>,
+    invitees: Vec<u64>,
     filter: usize,
-    selected: [Option<Entity>; 2],
+    selected: [Option<u64>; 2],
     scroll: [usize; 2],
     rows: [Option<Entity>; 2],
     dirty: bool,
-    last_click: Option<(Entity, f32)>,
+    last_click: Option<(u64, f32)>,
     combos: (usize, usize),
 }
 
@@ -363,8 +363,12 @@ pub(crate) fn picker(
                 ))
                 .id();
             let name_cell = commands.spawn((Node { width: Val::Px(NAME_COLUMN), height: Val::Percent(100.0), align_items: AlignItems::Center, column_gap: Val::Px(6.0), padding: UiRect::left(Val::Px(2.0)), ..default() }, Pickable::IGNORE, ChildOf(row))).id();
-            let pic = portraits.portrait(&mut images, c.sim);
-            commands.spawn((ImageNode::new(pic), crate::portraits::PortraitOf(c.sim), Node { width: Val::Px(40.0), height: Val::Px(40.0), ..default() }, Pickable::IGNORE, ChildOf(name_cell)));
+            if let Some(actor)=c.actor {
+                let pic=portraits.portrait(&mut images,actor);
+                commands.spawn((ImageNode::new(pic),crate::portraits::PortraitOf(actor),Node{width:Val::Px(40.0),height:Val::Px(40.0),..default()},Pickable::IGNORE,ChildOf(name_cell)));
+            } else {
+                commands.spawn((crate::menu::text(c.name.chars().take(1).collect::<String>(),20.0,Color::WHITE),Pickable::IGNORE,ChildOf(name_cell)));
+            }
             commands.spawn((Text::new(c.name.clone()), font.clone(), line, TextColor(crate::layout::color(TEXT)), Pickable::IGNORE, ChildOf(name_cell)));
             let liking = commands.spawn((Node { flex_grow: 1.0, height: Val::Percent(100.0), align_items: AlignItems::Center, justify_content: JustifyContent::Center, ..default() }, Pickable::IGNORE, ChildOf(row))).id();
             let tint = if c.liking >= 0.0 { Color::srgb(0.1, 0.5, 0.15) } else { Color::srgb(0.7, 0.12, 0.1) };

@@ -51,11 +51,15 @@ impl Meeting {
 /// Whether the two could go on a date (the game's `CanGoOnDate`): both teens, or both young
 /// adults and up; and romantically involved, or their talk gone romantic.
 pub fn can_date(a: &Sim, b: &Sim, rels: &Relationships, other: Entity) -> bool {
+    rels.0.get(&other).is_some_and(|r|can_date_relationship(a,b,r))
+}
+
+pub(crate) fn can_date_relationship(a:&Sim,b:&Sim,r:&crate::social::Relationship)->bool {
     let grown = |s: &Sim| s.age.is_grown() && s.age != Age::Child;
     let ages = (a.age == Age::Teen && b.age == Age::Teen) || (grown(a) && grown(b) && a.age != Age::Teen && b.age != Age::Teen);
     use crate::social::RelStatus;
     let together = |s: RelStatus| matches!(s, RelStatus::Partner | RelStatus::Engaged | RelStatus::Married);
-    let romantic = rels.0.get(&other).is_some_and(|r| r.romantic || together(r.status) || (r.stc.commodity == crate::conversation::Commodity::Amorous && r.stc.value > 0.0));
+    let romantic = r.romantic || together(r.status) || (r.stc.commodity == crate::conversation::Commodity::Amorous && r.stc.value > 0.0);
     ages && romantic
 }
 

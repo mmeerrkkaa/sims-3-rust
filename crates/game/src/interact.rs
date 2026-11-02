@@ -2916,6 +2916,8 @@ pub enum ActionKind {
     JoinCareer { target: Entity, track: usize },
     /// Phone someone and invite them over.
     Invite { target: Entity },
+    /// A remote contact is bound only when its call reaches the front of the queue.
+    ResidentCall { resident: u64, call: crate::residents::ResidentCall },
     /// Phone a friend for a chat.
     PhoneChat { target: Entity },
     /// A prank call to someone they know (`pranks`).
@@ -3585,6 +3587,7 @@ pub(crate) fn run_actions(
             }
             continue;
         };
+        if matches!(action.kind, ActionKind::ResidentCall { .. }) { continue; }
         let mut finished = false;
         let mut stand_up_at: Option<Vec2> = None;
         // (Its clips, what follows, how long, the object, and whether played mirrored: the far
@@ -3798,7 +3801,8 @@ pub(crate) fn run_actions(
                             objects.get(*target).ok().map(|(obj, otf, _, of)| (obj.use_point(otf), of.map_or(1, |f| f.0)))
                         }
                         ActionKind::Repair { target } | ActionKind::Upgrade { target, .. } => objects.get(*target).ok().map(|(obj, otf, _, of)| (obj.use_point(otf), of.map_or(1, |f| f.0))),
-                        ActionKind::Invite { .. }
+                        ActionKind::ResidentCall { .. }
+                        | ActionKind::Invite { .. }
                         | ActionKind::PhoneChat { .. }
                         | ActionKind::PrankCall { .. }
                         | ActionKind::CheckUpOnWork
@@ -4532,7 +4536,8 @@ pub(crate) fn run_actions(
                                     commands.entity(me).insert(crate::seasonal::OutdoorEvent::Begun { what: *what, at: Vec3::new(at.x, y, at.y), minutes: what.minutes() });
                                 }
                             }
-                            ActionKind::Invite { .. }
+                            ActionKind::ResidentCall { .. }
+                        | ActionKind::Invite { .. }
                             | ActionKind::PhoneChat { .. }
                             | ActionKind::PrankCall { .. }
                             | ActionKind::CheckUpOnWork
@@ -6704,7 +6709,7 @@ fn autonomy(
         Query<&RouteFailed>,
     ),
     (called, repairmen, laundry, privacy): (Option<Res<RepairmanVisit>>, Query<(), With<crate::services::Repairman>>, Res<crate::laundry::Laundry>, Res<crate::privacy::Privacy>),
-    friends_away: Query<(Entity, &Sim), (With<OffLot>, Without<Invited>)>,
+    (friends_away,story,dormant,pending_contacts,actor_index): (Query<(Entity, &Sim), (With<OffLot>, Without<Invited>)>, Res<crate::story::TownStory>, Res<crate::household::Dormant>, Res<crate::ghosts::PendingRels>, Res<crate::residents::ResidentActors>),
     (callers, residents, mut solve, (cleaners, mut commands)): (Query<(Entity, &crate::doorbell::AtTheDoor)>, Query<&crate::homes::Resident>, ResMut<crate::livehud::SolveNeed>, (Query<(), With<crate::traitacts::CleaningHouse>>, Commands)),
     (weather, building, chess, music, potties, swipeable, looked): (
         Res<crate::weather::Weather>,
@@ -7368,12 +7373,16 @@ fn autonomy(
         // better, when there's someone about).
         let grown = matches!(sim.age, Age::Teen | Age::YoungAdult | Age::Adult | Age::Elder);
         if motives.0[SOCIAL] < social_need && grown && my_lot.is_none() && household.contains(me)
-            && let Some((_, friend, name)) =
-                friends_away.iter().filter_map(|(e, s)| Some((rels.0.get(&e)?.friendship, e, s.full_name()))).filter(|x| x.0 > 15.0).max_by(|a, b| a.0.total_cmp(&b.0))
+            && let Some((friend,name))=crate::residents::contacts(me,rels,&pending_contacts,&actor_index).into_iter()
+                .filter(|c| c.relationship.friendship>15.0 && if let Some(e)=c.actor {friends_away.contains(e)} else {
+                    story.model(&c.id).is_none_or(|m|m.present()) && crate::residents::resident_state(&story,&dormant,c.id).is_some()
+                }).max_by(|a,b|a.relationship.friendship.total_cmp(&b.relationship.friendship))
+                .and_then(|c|c.actor.and_then(|e|friends_away.get(e).ok()).map(|(_,s)|(c.id,s.full_name()))
+                    .or_else(||crate::residents::contact_sim(&story,&dormant,c.id).map(|s|(c.id,s.full_name()))))
         {
             let score = (PHONE_CHAT_SOCIAL * PHONE_CHAT_MINUTES / 60.0) * urgency(SOCIAL) * 0.6 * rng.random_range(0.8..1.2);
             if best.as_ref().is_none_or(|b| score > b.0) {
-                best = Some((score, Action::new(format!("Chat with {name}"), ActionKind::PhoneChat { target: friend }, true)));
+                best = Some((score, Action::new(format!("Chat with {name}"), crate::residents::ResidentCall::Chat.action(friend), true)));
             }
         }
         // (Solving a need: only what sees to it, as the Sim's own choice, after what's queued.)

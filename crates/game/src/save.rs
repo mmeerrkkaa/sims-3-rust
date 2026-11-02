@@ -63,6 +63,8 @@ pub struct SavedSim {
     pub selected: bool,
     /// "home", "visiting" or "away".
     pub whereabouts: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invited_at: Option<f64>,
     /// Persistent open-world location; absent in saves predating multi-lot simulation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub world_location: Option<s3sim::residents::WorldLocation>,
@@ -686,6 +688,7 @@ pub(crate) fn saved_look(sim: &Sim) -> SavedSim {
         member: false,
         selected: false,
         whereabouts: "away".into(),
+        invited_at: None,
         world_location: None,
         lot_role: None,
         background: None,
@@ -822,7 +825,9 @@ impl SaveGame {
 
     /// Sims the household knows (visitors and friends living elsewhere).
     pub fn known_sims(&self) -> Vec<Sim> {
-        self.sims.iter().filter(|s| !s.member && s.background.is_none()).filter_map(|s| self.town.apply(Self::sim(s))).collect()
+        self.sims.iter().filter(|s| !s.member && s.background.is_none())
+            .filter(|s|s.whereabouts=="visiting" || s.world_location.is_some() || s.lot_role.is_some() || s.invited_at.is_some())
+            .filter_map(|s| self.town.apply(Self::sim(s))).collect()
     }
 
     pub fn file_name(&self) -> String {
@@ -1056,12 +1061,13 @@ pub(crate) fn save_game(
         ),
         Without<crate::services::ServiceNpc>,
     >,
-    (bought, _exit, graves, ghosts, pending_rels): (
+    (bought, _exit, graves, ghosts, pending_rels, invitations): (
         Query<(&GameObject, &Transform, Option<&crate::objects::Design>, Option<&crate::paintings::Hung>), With<Bought>>,
         Option<Res<crate::interact::LotExit>>,
         Query<(Entity, &crate::ghosts::Grave, &Transform), Without<crate::buyhistory::HistoryHidden>>,
         Query<(Entity, &Sim, &crate::ghosts::Ghost, &Relationships)>,
         Option<Res<crate::ghosts::PendingRels>>,
+        Query<&Invited>,
     ),
     ui: Option<Res<crate::icons::GameUi>>,
     mut notes: ResMut<Notifications>,
@@ -1127,6 +1133,7 @@ pub(crate) fn save_game(
         let guid = |i: usize| ui.as_ref().and_then(|u| u.data.opportunities.get(i)).map(|o| o.guid.clone());
         saved.push(SavedSim {
             id: sim.id,
+            invited_at: invitations.get(e).ok().map(|i| i.arrive_at),
             look: sim.look,
             first: sim.first.clone(),
             last: sim.last.clone(),
@@ -1232,6 +1239,11 @@ pub(crate) fn save_game(
         if resident.member && let Some(home) = world.data.lots.get(hh.lot_index) {
             story.residents.records.get_mut(&resident.id).unwrap().home = Some(home.id);
         }
+    }
+    // A tombstone is authoritative even before all death ingress uses the registry.
+    // Never materialize its stored appearance as a new living actor after reload.
+    for (_,grave,_) in &graves {
+        crate::residents::remember_grave(&mut story,&grave.sim);
     }
     let game = SaveGame {
         broken_objects: broken.iter().filter(|b| b.2).map(|(o, tf, _, charred, ..)| SavedBroken { objd: o.objd, position: tf.translation.to_array(), charred }).collect(),
@@ -1580,6 +1592,9 @@ fn restore_people_at<'a>(commands: &mut Commands, minutes: f64, deck: bool, worl
         crate::visit::restore_location(&mut ec, &world.data, s, minutes);
         if !s.member && let Some(background) = &s.background {
             crate::residents::restore_background(&mut ec, background);
+        }
+        if !s.member && let Some(arrive_at)=s.invited_at {
+            ec.insert(Invited{arrive_at});
         }
     }
     unmet

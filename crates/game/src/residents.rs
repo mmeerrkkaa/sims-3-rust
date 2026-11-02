@@ -390,3 +390,119 @@ pub(crate) fn reconcile_daily(
         }
     }
 }
+
+
+/// UI and queued calls keep identity even while a resident has no scene entity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ContactKey { Resident(u64), Entity(Entity) }
+
+#[derive(Clone, Copy)]
+pub(crate) struct Contact { pub id:u64, pub actor:Option<Entity>, pub relationship:crate::social::Relationship }
+
+/// Detailed relationships and unresolved saved links are authoritative for a live
+/// owner. Do not resurrect removed contacts from an older owner checkpoint.
+pub(crate) fn contacts(owner:Entity, relationships:&crate::social::Relationships,
+    pending:&crate::ghosts::PendingRels, actors:&ResidentActors) -> Vec<Contact> {
+    let mut rows=std::collections::BTreeMap::new();
+    for (_, saved) in pending.0.iter().filter(|(e,_)|*e==owner) {
+        rows.entry(saved.with).or_insert_with(|| { let mut row=crate::social::Relationship::default(); crate::save::restore_rel(&mut row,saved); row });
+    }
+    for (entity,row) in &relationships.0 {
+        if let Some(id)=actors.by_entity.get(entity) { rows.insert(*id,*row); }
+    }
+    rows.into_iter().map(|(id,relationship)|Contact{id,actor:actors.by_id.get(&id).copied(),relationship}).collect()
+}
+
+pub(crate) fn resident_state<'a>(story:&'a TownStory, dormant:&'a crate::household::Dormant, id:u64) -> Option<&'a crate::save::SavedSim> {
+    dormant.0.iter().flat_map(|d|&d.sims).find(|s|s.member && s.id==id)
+        .or_else(||story.residents.records.get(&id)?.state.as_ref())
+}
+
+pub(crate) fn contact_sim(story:&TownStory,dormant:&crate::household::Dormant,id:u64)->Option<crate::sim::Sim> {
+    let state=resident_state(story,dormant,id)?;
+    let mut sim=crate::save::SaveGame::sim(state);
+    if !dormant.0.iter().flat_map(|d|&d.sims).any(|s|s.member && s.id==id) && let Some(age)=story.model(&id).and_then(|m|m.age.as_deref()) { sim.age=crate::save::age_from_name(age); }
+    Some(sim)
+}
+
+#[derive(Clone,Copy,Debug)]
+pub enum ResidentCall { Chat, Invite, Prank, Out{lot:usize,date:bool} }
+impl ResidentCall {
+    pub(crate) fn action(self,id:u64)->crate::interact::ActionKind { crate::interact::ActionKind::ResidentCall{resident:id,call:self} }
+    fn bind(self,target:Entity)->crate::interact::ActionKind {
+        use crate::interact::ActionKind as A;
+        match self { Self::Chat=>A::PhoneChat{target}, Self::Invite=>A::Invite{target}, Self::Prank=>A::PrankCall{target}, Self::Out{lot,date}=>A::InviteOut{target,lot,date} }
+    }
+}
+
+#[derive(Resource,Default)]
+pub(crate) struct MaterializeRequests { queue:std::collections::VecDeque<u64>, pending:std::collections::HashSet<u64> }
+impl MaterializeRequests {
+    pub(crate) fn request(&mut self,id:u64) { if self.pending.insert(id) { self.queue.push_back(id); } }
+}
+
+/// Resolve only the front call. Existing actors retain all state and placement;
+/// cold actors are requested once, with a per-frame creation/work budget.
+pub(crate) fn resolve_calls(mut callers:Query<(&crate::sim::Sim,&mut crate::interact::ActionQueue)>,
+    people:Query<(Entity,&crate::sim::Sim,Has<PersonalStateReady>,Has<crate::ghosts::Ghost>,Has<crate::services::ServiceNpc>)>, story:Res<TownStory>, dormant:Res<crate::household::Dormant>,
+    mut requests:ResMut<MaterializeRequests>,mut notes:ResMut<crate::interact::Notifications>,graves:Query<&crate::ghosts::Grave>) {
+    if !callers.iter().any(|(_,q)|q.0.front().is_some_and(|a|matches!(a.kind,crate::interact::ActionKind::ResidentCall{..}))) {return;}
+    let by_id:std::collections::HashMap<_,_>=people.iter().map(|(e,s,ready,ghost,service)|(s.id,(e,ready||ghost||service))).collect();
+    for (caller,mut queue) in &mut callers {
+        let Some(front)=queue.0.front() else {continue};
+        let crate::interact::ActionKind::ResidentCall{resident,call}=front.kind else {continue};
+        if resident==caller.id { queue.0.pop_front(); continue; }
+        if let Some((entity,ready))=by_id.get(&resident) { if *ready {queue.0.front_mut().unwrap().kind=call.bind(*entity);} continue; }
+        if graves.iter().any(|g|g.sim.id==resident) || !story.model(&resident).is_none_or(|m|m.present()) || resident_state(&story,&dormant,resident).is_none() {
+            queue.0.pop_front(); notes.push("They can't be reached right now."); continue;
+        }
+        requests.request(resident);
+    }
+}
+
+pub(crate) fn materialize_requested(mut commands:Commands,mut requests:ResMut<MaterializeRequests>,
+    people:Query<&crate::sim::Sim>, story:Res<TownStory>, dormant:Res<crate::household::Dormant>, assets:Res<crate::sim::SimAssets>,mut materials:ResMut<Assets<StandardMaterial>>,exit:Option<Res<crate::interact::LotExit>>,
+    world:Res<crate::loading::CurrentWorld>,graves:Query<&crate::ghosts::Grave>) {
+    if requests.queue.is_empty() {return;}
+    let mut existing:std::collections::HashSet<_>=people.iter().map(|s|s.id).collect();
+    let mut created=0;
+    for _ in 0..8 {
+        if created==2 {break;}
+        let Some(id)=requests.queue.pop_front() else {break}; requests.pending.remove(&id);
+        if existing.contains(&id) || graves.iter().any(|g|g.sim.id==id) || !story.model(&id).is_none_or(|m|m.present()) {continue;}
+        let Some(sim)=contact_sim(&story,&dormant,id) else {continue};
+        let at=exit.as_ref().map_or(Vec2::ZERO,|e|e.0);
+        let position=Vec3::new(at.x,world.data.heightmap.sample(at.x,at.y),at.y);
+        let entity=crate::sim::spawn_sim_deferred(&mut commands,&assets,&mut materials,sim,position);
+        commands.entity(entity).insert((crate::interact::OffLot,Visibility::Hidden,crate::interact::Skills::default(),
+            crate::interact::ActionQueue::default(),crate::interact::AutonomyTimer(10000.0),DespawnOnExit(crate::AppState::InGame)));
+        existing.insert(id); created+=1;
+    }
+}
+
+
+pub(crate) fn remote_options(me:&crate::sim::Sim,other:&crate::sim::Sim,relationship:&crate::social::Relationship,
+    world:&crate::loading::WorldInfo,pie:&mut crate::hud::PieMenu)->Vec<(String,crate::interact::ActionKind)> {
+    let mut options=Vec::new(); pie.submenus.clear();
+    if me.age.is_little() || me.id==other.id {return options;}
+    options.push(("Call to Chat".into(),ResidentCall::Chat.action(other.id)));
+    options.push(("Invite Over".into(),ResidentCall::Invite.action(other.id)));
+    let lots:Vec<_>=(0..world.lots.len()).filter(|&l|crate::visit::visitable(world,l)).collect();
+    for (date,label,title) in [(false,"Invite Out ?","Invite Out"),(true,"Ask Out on Date ?","Ask Out on Date")] {
+        let allowed=if date {crate::meetups::can_date_relationship(me,other,relationship)} else {relationship.friendship>=crate::meetups::INVITE_OUT_MIN};
+        if !allowed || lots.is_empty() {continue;}
+        let places=lots.iter().map(|&lot|(crate::visit::place_name(world,lot),ResidentCall::Out{lot,date}.action(other.id))).collect();
+        options.push((label.into(),crate::hud::submenu_kind(pie.submenus.len()))); pie.submenus.push((title.into(),places));
+    }
+    options.push(("Prank Call".into(),ResidentCall::Prank.action(other.id))); options
+}
+
+
+pub(crate) fn remember_grave(story:&mut TownStory,sim:&crate::sim::Sim) {
+    story.residents.seed(sim.id,None,None,crate::save::saved_look(sim));
+    story.residents.model_or_insert_with(sim.id,Default::default).dead=true;
+}
+
+pub(crate) fn register_graves(mut story:ResMut<TownStory>,graves:Query<&crate::ghosts::Grave,Added<crate::ghosts::Grave>>) {
+    for grave in &graves {remember_grave(&mut story,&grave.sim);}
+}

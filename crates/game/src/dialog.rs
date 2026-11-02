@@ -38,7 +38,7 @@ pub enum Question {
     /// A newborn's name (typed in; the one suggested if not).
     NameBaby { sim: Entity, suggested: String },
     /// A call come in (`calls`): to chat, or to hang out (at the caller's home, if they've one).
-    PhoneCall { sim: Entity, caller: Entity, invite: bool, home: Option<usize> },
+    PhoneCall { sim: Entity, caller: u64, invite: bool, home: Option<usize> },
     /// An epitaph for a tombstone (typed in; the one suggested if not).
     Engrave { grave: Entity, suggested: String },
     /// A name for something discovered through a telescope (typed in).

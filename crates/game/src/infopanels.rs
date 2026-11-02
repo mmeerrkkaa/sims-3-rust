@@ -95,7 +95,7 @@ pub struct InfoPanels {
     /// The first card shown (scrolled sideways), the cards' holder, and what they show.
     scroll: usize,
     cards: Option<Entity>,
-    shown: Vec<(Entity, i32, u8, u8)>,
+    shown: Vec<(crate::residents::ContactKey, i32, u8, u8, Option<Entity>)>,
     /// The opportunity slot chosen, and what the slots show.
     opp_slot: usize,
     opp_shown: Vec<Option<usize>>,
@@ -103,12 +103,12 @@ pub struct InfoPanels {
     rewards: Option<Entity>,
     rew_shown: (u32, Vec<String>),
     /// The one last talked to (first in the list, as `sLastInteractedWith`).
-    last_talked: Option<Entity>,
+    last_talked: Option<u64>,
 }
 
 /// A relationship card's portrait (clicked: the camera goes to them).
 #[derive(Component)]
-struct Card(Entity);
+struct Card(crate::residents::ContactKey);
 
 fn spawn_panels(mut commands: Commands, ui: Option<ResMut<UiAssets>>, (mut images, mut fonts): (ResMut<Assets<Image>>, ResMut<Assets<Font>>), old: Option<Res<InfoPanels>>) {
     let Some(mut ui) = ui else { return };
@@ -254,10 +254,10 @@ fn card_options(
     if my_sim.age.is_little() {
         return out;
     }
-    out.push(("Call to Chat".to_string(), ActionKind::PhoneChat { target }));
+    out.push(("Call to Chat".to_string(), crate::residents::ResidentCall::Chat.action(sim.id)));
     if !member {
         if !visiting {
-            out.push(("Invite Over".to_string(), ActionKind::Invite { target }));
+            out.push(("Invite Over".to_string(), crate::residents::ResidentCall::Invite.action(sim.id)));
         }
         let lots: Vec<usize> = (0..world.lots.len()).filter(|&l| crate::visit::visitable(world, l)).collect();
         for (date, label, title) in [(false, "Invite Out ›", "Invite Out"), (true, "Ask Out on Date ›", "Ask Out on Date")] {
@@ -265,11 +265,11 @@ fn card_options(
             if !ok || lots.is_empty() {
                 continue;
             }
-            let places = lots.iter().map(|&l| (crate::visit::place_name(world, l), ActionKind::InviteOut { target, lot: l, date })).collect();
+            let places = lots.iter().map(|&l| (crate::visit::place_name(world, l), crate::residents::ResidentCall::Out{lot:l,date}.action(sim.id))).collect();
             out.push((label.to_string(), crate::hud::submenu_kind(pie.submenus.len())));
             pie.submenus.push((title.to_string(), places));
         }
-        out.push(("Prank Call".to_string(), ActionKind::PrankCall { target }));
+        out.push(("Prank Call".to_string(), crate::residents::ResidentCall::Prank.action(sim.id)));
     }
     out
 }
@@ -291,6 +291,7 @@ fn relationships_panel(
     (mut wheel, mut events): (MessageReader<MouseWheel>, MessageReader<crate::life::LifeEvent>),
     (mut pie, world, windows): (ResMut<crate::hud::PieMenu>, Res<crate::loading::CurrentWorld>, Query<&Window, With<bevy::window::PrimaryWindow>>),
     pets: Query<(Entity, &crate::pets::Pet, Option<&crate::pets::PetBonds>, Has<crate::pets::HomePet>, &GlobalTransform)>,
+    (story,dormant,index,pending):(Res<crate::story::TownStory>,Res<crate::household::Dormant>,Res<crate::residents::ResidentActors>,Res<crate::ghosts::PendingRels>),
 ) {
     let scrolled: f32 = wheel.read().map(|w| w.y.signum()).sum();
     let Ok((me, my_sim, rels, my_job)) = selected.single() else { return };
@@ -298,7 +299,7 @@ fn relationships_panel(
         if ev.sim == me
             && let crate::life::LifeEventKind::Socialized { other, .. } = ev.kind
         {
-            p.last_talked = Some(other);
+            p.last_talked = index.by_entity.get(&other).copied();
         }
     }
     if *panel != InfoPanel::Relationships {
@@ -306,6 +307,8 @@ fn relationships_panel(
     }
     let Some(mut ui) = ui else { return };
     let p = &mut *p;
+    use crate::residents::ContactKey as K;
+    let contacts=crate::residents::contacts(me,rels,&pending,&index);
     // The filters.
     for (id, f) in [(REL_ALL, Filter::All), (REL_FAMILY, Filter::Family), (REL_FRIENDS, Filter::Friends), (REL_COWORKERS, Filter::Coworkers), (REL_VISITORS, Filter::Visitors)] {
         if pressed(&clicks, p.rel.id(id)) {
@@ -327,7 +330,17 @@ fn relationships_panel(
         if *i != Interaction::Pressed {
             continue;
         }
-        let target = c.0;
+        if let K::Resident(id)=c.0 {
+            if !index.by_id.contains_key(&id) {
+                let Some(sim)=crate::residents::contact_sim(&story,&dormant,id) else {continue};
+                let Some(contact)=contacts.iter().find(|c|c.id==id) else {continue};
+                if !story.model(&id).is_none_or(|m|m.present()) {continue;}
+                let options=crate::residents::remote_options(my_sim,&sim,&contact.relationship,&world.data,&mut pie);
+                let at=windows.single().ok().and_then(|w|w.cursor_position()).unwrap_or(Vec2::new(600.0,400.0));
+                crate::hud::open_pie(&mut commands,&mut pie,at,&sim.full_name(),me,options); continue;
+            }
+        }
+        let target=match c.0 {K::Resident(id)=>*index.by_id.get(&id).unwrap(),K::Entity(e)=>e};
         // (A pet's card: the camera to it.)
         if let Ok((.., ptf)) = pets.get(target) {
             if let Ok(mut c) = cam.single_mut() {
@@ -351,38 +364,28 @@ fn relationships_panel(
     // (Right-clicked: the camera to them, if they're about: the game's.)
     if mouse.just_pressed(MouseButton::Right)
         && let Some((_, c)) = all_cards.iter().find(|(i, _)| **i != Interaction::None)
-        && let Ok((_, _, _, _, v, tf)) = people.get(c.0)
+        && let Ok((_, _, _, _, v, tf)) = people.get(match c.0 {K::Resident(id)=>index.by_id.get(&id).copied().unwrap_or(Entity::PLACEHOLDER),K::Entity(e)=>e})
         && v.get()
         && let Ok(mut cm) = cam.single_mut()
     {
         cm.look_at(tf.translation());
     }
     // Who's listed, in the game's order.
-    let mut known: Vec<(Entity, &crate::social::Relationship, &Sim, bool, bool, bool)> = rels
-        .0
-        .iter()
-        .filter_map(|(e, r)| {
-            let (sim, job, member, visiting, v, _) = people.get(*e).ok()?;
-            let relative = member || family.word(my_sim.id, sim.id).is_some();
-            let coworker = matches!((job, my_job), (Some(a), Some(b)) if a.track == b.track);
-            // (Visitors: those over at the household's lot now.)
-            Some((*e, r, sim, relative, coworker, visiting && v.get()))
-        })
-        .filter(|(_, r, _, relative, coworker, visitor)| match p.filter {
-            Filter::All => true,
-            Filter::Family => *relative,
-            Filter::Friends => r.friendship >= crate::social::FRIEND_THRESHOLD,
-            Filter::Coworkers => *coworker,
-            Filter::Visitors => *visitor,
-        })
-        .collect();
-    let last = p.last_talked;
-    known.sort_by(|a, b| {
-        (b.0 == last.unwrap_or(Entity::PLACEHOLDER))
-            .cmp(&(a.0 == last.unwrap_or(Entity::PLACEHOLDER)))
-            .then(b.5.cmp(&a.5))
-            .then(b.1.friendship.total_cmp(&a.1.friendship))
-    });
+    let mut known:Vec<_>=contacts.iter().filter_map(|contact| {
+        let live=contact.actor.and_then(|e|people.get(e).ok());
+        let stored=crate::residents::resident_state(&story,&dormant,contact.id);
+        if live.is_none() && stored.is_none() {return None;}
+        let relative=live.is_some_and(|p|p.2) || family.word(my_sim.id,contact.id).is_some();
+        let coworker=live.and_then(|p|p.1).is_some_and(|job|my_job.is_some_and(|mine|mine.track==job.track))
+            || my_job.is_some_and(|mine|story.model(&contact.id).and_then(|m|m.job.as_ref()).is_some_and(|(name,_)|name==mine.career().name));
+        let visitor=live.is_some_and(|p|p.3 && p.4.get());
+        let r=&contact.relationship;
+        let show=match p.filter {Filter::All=>true,Filter::Family=>relative,Filter::Friends=>r.friendship>=crate::social::FRIEND_THRESHOLD,Filter::Coworkers=>coworker,Filter::Visitors=>visitor};
+        show.then_some((*contact,relative,coworker,visitor))
+    }).collect();
+    let last=p.last_talked;
+    known.sort_by(|a,b|(Some(b.0.id)==last).cmp(&(Some(a.0.id)==last))
+        .then(b.3.cmp(&a.3)).then(b.0.relationship.friendship.total_cmp(&a.0.relationship.friendship)).then(a.0.id.cmp(&b.0.id)));
     // The pets they know, after the Sims, as the game's panel lists them: the household's (its
     // family), and any other they've got to know.
     let pet_cards: Vec<(Entity, &crate::pets::Pet, f32, bool)> = pets
@@ -409,11 +412,11 @@ fn relationships_panel(
         p.scroll = if scrolled > 0.0 { p.scroll.saturating_sub(1) } else { (p.scroll + 1).min(most) };
     }
     p.scroll = p.scroll.min(total.saturating_sub(columns));
-    let mut shown: Vec<(Entity, i32, u8, u8)> = known.iter().skip(p.scroll).take(columns).map(|k| (k.0, k.1.friendship.round() as i32, k.1.status as u8, k.3 as u8 | (k.4 as u8) << 1 | (k.5 as u8) << 2)).collect();
+    let mut shown:Vec<_>=known.iter().skip(p.scroll).take(columns).map(|k|(K::Resident(k.0.id),k.0.relationship.friendship.round() as i32,k.0.relationship.status as u8,k.1 as u8|(k.2 as u8)<<1|(k.3 as u8)<<2,k.0.actor)).collect();
     let sims_shown = shown.len();
     let pets_from = p.scroll.saturating_sub(known.len());
-    shown.extend(pet_cards.iter().skip(pets_from).take(columns - sims_shown).map(|c| (c.0, c.2.round() as i32, 0, c.3 as u8 | 8)));
-    shown.push((me, p.scroll as i32, p.filter as u8, 0));
+    shown.extend(pet_cards.iter().skip(pets_from).take(columns - sims_shown).map(|c| (K::Entity(c.0), c.2.round() as i32, 0, c.3 as u8 | 8,Some(c.0))));
+    shown.push((K::Entity(me), p.scroll as i32, p.filter as u8, 0,Some(me)));
     if shown == p.shown {
         return;
     }
@@ -422,7 +425,10 @@ fn relationships_panel(
     let h = holder(&mut commands, grid, &mut p.cards, &vis);
     commands.entity(grid).insert(Node { overflow: Overflow::clip(), ..ui_node(&ui, "HUDRelationshipsPanel", REL_GRID) });
     let step = g.cell[0] + g.cell_padding[0] + g.cell_padding[2];
-    for (n, (e, r, sim, relative, coworker, visitor)) in known.iter().skip(p.scroll).take(columns).enumerate() {
+    for (n, (contact,relative,coworker,visitor)) in known.iter().skip(p.scroll).take(columns).enumerate() {
+        let sim=contact.actor.and_then(|e|people.get(e).ok()).map(|p|p.0.clone()).or_else(||crate::residents::contact_sim(&story,&dormant,contact.id));
+        let Some(sim)=sim else {continue}; let r=&contact.relationship;
+        let e=contact.actor;
         let x = g.padding[0] + n as f32 * step + g.cell_padding[0];
         let mut w = template.clone();
         let (cw, ch) = (w.area[2] - w.area[0], w.area[3] - w.area[1]);
@@ -434,16 +440,21 @@ fn relationships_panel(
         };
         if let Some(t) = c.id(ENTRY_THUMB) {
             commands.entity(t).despawn_children();
-            let pic = portraits.portrait(&mut images, *e);
             commands.entity(t).with_children(|c| {
-                c.spawn((ImageNode::new(pic), crate::portraits::PortraitOf(*e), Node { width: Val::Percent(100.0), height: Val::Percent(100.0), ..default() }, Pickable::IGNORE));
+                if let Some(e)=e {
+                    let pic=portraits.portrait(&mut images,e);
+                    c.spawn((ImageNode::new(pic),crate::portraits::PortraitOf(e),Node{width:Val::Percent(100.0),height:Val::Percent(100.0),..default()},Pickable::IGNORE));
+                } else {
+                    let initials:String=sim.first.chars().take(1).chain(sim.last.chars().take(1)).collect();
+                    c.spawn((crate::menu::text(initials,22.0,Color::WHITE),Pickable::IGNORE));
+                }
             });
             // (Their traits as far as they're known: the rest a question mark, as the game's.)
             // (The household's own all known.)
-            let ours = people.get(*e).is_ok_and(|p| p.2);
+            let ours = e.is_some_and(|e|people.get(e).is_ok_and(|p|p.2));
             let traits: Vec<String> = sim.traits.iter().map(|t| if ours || r.knows(*t) { t.name().to_string() } else { "?".to_string() }).collect();
             let tip = if traits.is_empty() { format!("{}\n{label}", sim.full_name()) } else { format!("{}\n{label}\nTraits: {}", sim.full_name(), traits.join(", ")) };
-            commands.entity(t).remove::<Pickable>().insert((Card(*e), Interaction::default(), crate::hud::BlocksWorld, crate::icons::Tooltip(tip)));
+            commands.entity(t).remove::<Pickable>().insert((Card(K::Resident(contact.id)), Interaction::default(), crate::hud::BlocksWorld, crate::icons::Tooltip(tip)));
         }
         if let Some(t) = c.text(ENTRY_TEXT) {
             commands.entity(t).insert(Text::new(label.clone()));
@@ -487,7 +498,7 @@ fn relationships_panel(
             commands.entity(t).with_children(|c| {
                 c.spawn((ImageNode::new(pic), crate::portraits::PortraitOf(*e), Node { width: Val::Percent(100.0), height: Val::Percent(100.0), ..default() }, Pickable::IGNORE));
             });
-            commands.entity(t).remove::<Pickable>().insert((Card(*e), Interaction::default(), crate::hud::BlocksWorld, crate::icons::Tooltip(format!("{}\n{label}", pet.name))));
+            commands.entity(t).remove::<Pickable>().insert((Card(K::Entity(*e)), Interaction::default(), crate::hud::BlocksWorld, crate::icons::Tooltip(format!("{}\n{label}", pet.name))));
         }
         if let Some(t) = c.text(ENTRY_TEXT) {
             commands.entity(t).insert(Text::new(label.clone()));
@@ -674,4 +685,11 @@ fn rewards_panel(
             commands.entity(m).insert(Visibility::Hidden);
         }
     }
+}
+
+
+#[cfg(local_validation)]
+pub(crate) fn validate_contact_click(world:&mut World) {
+    use bevy::ecs::system::RunSystemOnce;
+    world.run_system_once(relationships_panel).unwrap();
 }

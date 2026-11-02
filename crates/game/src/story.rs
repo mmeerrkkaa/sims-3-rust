@@ -26,7 +26,9 @@ impl Plugin for StoryPlugin {
         crate::life::buffer_events::<crate::life::LifeEvent, 6>(app);
         app.init_resource::<TownStory>()
             .init_resource::<crate::residents::ResidentActors>()
-            .add_systems(Update, (prepare_story, merge_created, crate::residents::seed_residents, crate::residents::prepare_personal_state, crate::residents::hydrate_new_actors, crate::residents::bind_contacts, crate::residents::reconcile_daily).chain().run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Prepare))
+            .init_resource::<crate::residents::MaterializeRequests>()
+            .add_systems(OnEnter(crate::AppState::Loading), |mut requests:ResMut<crate::residents::MaterializeRequests>| *requests=default())
+            .add_systems(Update, (prepare_story, merge_created, crate::residents::seed_residents, crate::residents::register_graves, crate::residents::resolve_calls, crate::residents::materialize_requested, crate::residents::prepare_personal_state, crate::residents::hydrate_new_actors, crate::residents::bind_contacts, crate::residents::resolve_calls, crate::residents::reconcile_daily).chain().run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Prepare))
             // Actors spawned after Prepare must finish their personal handoff
             // before a same-frame save can checkpoint their temporary defaults.
             .add_systems(Update, (crate::residents::prepare_personal_state, crate::residents::hydrate_new_actors, crate::residents::bind_contacts).chain()
@@ -34,7 +36,9 @@ impl Plugin for StoryPlugin {
             .add_systems(crate::clock::SimTick, (merge_created, crate::residents::seed_residents, crate::life::capture_subscriber::<crate::life::LifeEvent, 6>, crate::residents::model_events, progress, crate::residents::reconcile_daily, read_the_news).chain().in_set(crate::aging::LifecyclePhase::Town))
             .add_systems(crate::clock::SimTick, (crate::life::capture_subscriber::<crate::life::LifeEvent, 6>, crate::residents::model_events).chain().in_set(crate::wishes::AspirationPhase::Initialize));
         #[cfg(local_validation)]
-        app.init_resource::<crate::npc_ownership_test::ResidentHandoffProbe>()
+        app.init_resource::<crate::npc_ownership_test::ResidentRequestProbe>()
+            .add_systems(Update, crate::npc_ownership_test::resident_request_frame.in_set(crate::clock::SimPhase::Gameplay).run_if(in_state(PlayMode::Live).and_then(||std::env::var_os("RESIDENT_REQUEST_TEST").is_some() || std::env::var_os("RESIDENT_REQUEST_RELOAD").is_some())))
+            .init_resource::<crate::npc_ownership_test::ResidentHandoffProbe>()
             .add_systems(Update, crate::npc_ownership_test::resident_handoff_frame.in_set(crate::clock::SimPhase::Gameplay).run_if(in_state(PlayMode::Live).and_then(|| std::env::var_os("RESIDENT_HANDOFF_TEST").is_some() || std::env::var_os("RESIDENT_HANDOFF_RELOAD").is_some())))
             .init_resource::<crate::npc_ownership_test::CanonicalResidentProbe>()
             .add_systems(Update, crate::npc_ownership_test::canonical_resident_frame.in_set(crate::clock::SimPhase::Gameplay).run_if(in_state(PlayMode::Live).and_then(|| std::env::var_os("CANONICAL_RESIDENT_TEST").is_some() || std::env::var_os("CANONICAL_RESIDENT_RELOAD").is_some())))

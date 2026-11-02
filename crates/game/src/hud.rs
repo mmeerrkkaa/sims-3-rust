@@ -3198,7 +3198,7 @@ fn pie_buttons(
             label = "Donate to Charity".to_string();
         }
         // (Someone asked out to a place picked: "Invite Gretle Goth Out".)
-        if let (Some(who), &ActionKind::InviteOut { date, .. }) = (title.strip_prefix("Where to Meet "), &kind) {
+        if let (Some(who), Some(date)) = (title.strip_prefix("Where to Meet "), match &kind { ActionKind::InviteOut{date,..} | ActionKind::ResidentCall{call:crate::residents::ResidentCall::Out{date,..},..}=>Some(*date),_=>None }) {
             label = if date { format!("Ask {who} Out on Date") } else { format!("Invite {who} Out") };
         }
         // (Someone known chatted with online: "Chat...".)
@@ -3947,6 +3947,7 @@ fn phone_button(
     ),
     world: Res<CurrentWorld>,
     ui: Option<Res<crate::layout::UiAssets>>,
+    (story,dormant,index,pending):(Res<crate::story::TownStory>,Res<crate::household::Dormant>,Res<crate::residents::ResidentActors>,Res<crate::ghosts::PendingRels>),
 ) {
     if asked.is_some() {
         commands.remove_resource::<OpenPhone>();
@@ -3955,7 +3956,15 @@ fn phone_button(
     }
     let Ok((actor, rels, me, has_job)) = selected.single() else { return };
     // The Sims they know, best friends first.
-    let mut known: Vec<(f32, Entity, String)> = away.iter().filter(|(e, _)| rels.0.contains_key(e)).map(|(e, s)| (rels.friendship(e), e, s.full_name())).collect();
+    let contacts=crate::residents::contacts(actor,rels,&pending,&index);
+    let mut known:Vec<_>=contacts.iter().filter_map(|c| {
+        if let Some(entity)=c.actor {
+            let (_,sim)=away.get(entity).ok()?; Some((c.relationship.friendship,c.id,sim.full_name()))
+        } else {
+            if !story.model(&c.id).is_none_or(|m|m.present()) {return None;}
+            let state=crate::residents::resident_state(&story,&dormant,c.id)?; Some((c.relationship.friendship,c.id,format!("{} {}",state.first,state.last)))
+        }
+    }).collect();
     if known.is_empty() {
         notes.push("There's nobody to call yet — meet some Sims first!");
     }
@@ -3981,10 +3990,10 @@ fn phone_button(
         pie.submenus.push(("Real Estate and Travel Services".to_string(), vec![("Check Real Estate".to_string(), ActionKind::CheckRealEstate)]));
     }
     if !known.is_empty() {
-        let chat = known.iter().map(|(_, e, n)| (format!("Chat with {n}"), ActionKind::PhoneChat { target: *e })).collect();
+        let chat = known.iter().map(|(_, e, n)| (format!("Chat with {n}"), crate::residents::ResidentCall::Chat.action(*e))).collect();
         options.push(("Chat with a Friend ›".to_string(), submenu_kind(pie.submenus.len())));
         pie.submenus.push(("Chat".to_string(), chat));
-        let invite = known.iter().map(|(_, e, n)| (format!("Invite {n} Over"), ActionKind::Invite { target: *e })).collect();
+        let invite = known.iter().map(|(_, e, n)| (format!("Invite {n} Over"), crate::residents::ResidentCall::Invite.action(*e))).collect();
         options.push(("Invite Someone Over ›".to_string(), submenu_kind(pie.submenus.len())));
         pie.submenus.push(("Invite Over".to_string(), invite));
         // (Out to a community lot, as the game's `CallInviteToLot`: anyone known well enough,
@@ -3995,14 +4004,17 @@ fn phone_button(
                 let mut who: Vec<(String, ActionKind)> = Vec::new();
                 for (f, e, n) in &known {
                     let ok = if date {
-                        away.get(*e).is_ok_and(|(_, s)| crate::meetups::can_date(me, s, rels, *e))
+                        contacts.iter().find(|c|c.id==*e).is_some_and(|c| {
+                            let other=c.actor.and_then(|a|away.get(a).ok()).map(|(_,s)|s.clone()).or_else(||crate::residents::contact_sim(&story,&dormant,*e));
+                            other.is_some_and(|other|crate::meetups::can_date_relationship(me,&other,&c.relationship))
+                        })
                     } else {
                         *f >= crate::meetups::INVITE_OUT_MIN
                     };
                     if !ok {
                         continue;
                     }
-                    let places = lots.iter().map(|&l| (crate::visit::place_name(&world.data, l), ActionKind::InviteOut { target: *e, lot: l, date })).collect();
+                    let places = lots.iter().map(|&l| (crate::visit::place_name(&world.data, l), crate::residents::ResidentCall::Out {lot:l,date}.action(*e))).collect();
                     who.push((format!("{n} ›"), submenu_kind(pie.submenus.len())));
                     pie.submenus.push((format!("Where to Meet {n}"), places));
                 }
@@ -4019,7 +4031,7 @@ fn phone_button(
         }
         // (A prank call, the game's `CallPrank`.)
         if !me.age.is_little() {
-            let prank = known.iter().map(|(_, e, n)| (format!("Prank Call {n}"), ActionKind::PrankCall { target: *e })).collect();
+            let prank = known.iter().map(|(_, e, n)| (format!("Prank Call {n}"), crate::residents::ResidentCall::Prank.action(*e))).collect();
             options.push(("Prank Call ›".to_string(), submenu_kind(pie.submenus.len())));
             pie.submenus.push(("Prank Call".to_string(), prank));
         }

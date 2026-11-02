@@ -33,7 +33,7 @@ pub struct RelationsPanel {
     pub with_tree: bool,
     root: Option<Entity>,
     /// What the panel shows, to redraw it only on change.
-    shown: Vec<(Entity, i32, i32, u8)>,
+    shown: Vec<(u64, i32, i32, u8, Option<Entity>)>,
     /// The family tree beside it, and who it shows.
     tree: bool,
     tree_root: Option<Entity>,
@@ -45,7 +45,7 @@ pub struct RelationsPanel {
 pub struct TreeButton;
 
 #[derive(Component)]
-struct RelationRow(Entity);
+struct RelationRow(u64);
 
 const ROWS: usize = 10;
 const BAR: f32 = 190.0;
@@ -114,17 +114,19 @@ fn update_panel(
     people: Query<&Sim>,
     (mut portraits, mut images): (ResMut<crate::portraits::Portraits>, ResMut<Assets<Image>>),
     family: Res<crate::family::Genealogy>,
+    (story,dormant,index,pending):(Res<crate::story::TownStory>,Res<crate::household::Dormant>,Res<crate::residents::ResidentActors>,Res<crate::ghosts::PendingRels>),
 ) {
     let _profile = crate::perf_scopes::measure(crate::perf_scopes::Section::Relations);
     if !panel.open {
         return;
     }
     let Ok((me, my_sim, rels)) = selected.single() else { return };
-    let mut known: Vec<(Entity, &crate::social::Relationship, &Sim)> = rels.0.iter().filter_map(|(e, r)| Some((*e, r, people.get(*e).ok()?))).collect();
-    known.sort_by(|a, b| (b.1.friendship + b.1.romance * 0.5).total_cmp(&(a.1.friendship + a.1.romance * 0.5)));
+    let mut known=crate::residents::contacts(me,rels,&pending,&index);
+    known.retain(|c|c.actor.is_some_and(|e|people.contains(e)) || crate::residents::resident_state(&story,&dormant,c.id).is_some());
+    known.sort_by(|a,b|(b.relationship.friendship+b.relationship.romance*0.5).total_cmp(&(a.relationship.friendship+a.relationship.romance*0.5)).then(a.id.cmp(&b.id)));
     known.truncate(ROWS);
-    let mut shown: Vec<(Entity, i32, i32, u8)> = known.iter().map(|(e, r, _)| (*e, r.friendship as i32, r.romance as i32, r.status as u8)).collect();
-    shown.push((me, 0, 0, 255));
+    let mut shown:Vec<_>=known.iter().map(|c|(c.id,c.relationship.friendship as i32,c.relationship.romance as i32,c.relationship.status as u8,c.actor)).collect();
+    shown.push((my_sim.id,0,0,255,Some(me)));
     if panel.root.is_some() && panel.shown == shown {
         return;
     }
@@ -165,7 +167,9 @@ fn update_panel(
             if known.is_empty() {
                 p.spawn(text("Nobody yet. Go and meet some Sims!", 14.0, Color::srgb(0.8, 0.85, 0.95)));
             }
-            for (e, rel, sim) in &known {
+            for contact in &known {
+                let sim=contact.actor.and_then(|e|people.get(e).ok()).cloned().or_else(||crate::residents::contact_sim(&story,&dormant,contact.id));
+                let Some(sim)=sim else {continue}; let rel=&contact.relationship;
                 let ring = if rel.friendship >= 40.0 {
                     Color::srgb(0.35, 0.85, 0.35)
                 } else if rel.friendship <= -20.0 {
@@ -175,7 +179,7 @@ fn update_panel(
                 };
                 p.spawn((
                     Button,
-                    RelationRow(*e),
+                    RelationRow(contact.id),
                     Node {
                         column_gap: Val::Px(10.0),
                         align_items: AlignItems::Center,
@@ -199,12 +203,9 @@ fn update_panel(
                         Pickable::IGNORE,
                     ))
                     .with_children(|f| {
-                        f.spawn((
-                            ImageNode::new(portraits.portrait(&mut images, *e)),
-                            crate::portraits::PortraitOf(*e),
-                            Node { width: Val::Percent(100.0), height: Val::Percent(100.0), ..default() },
-                            Pickable::IGNORE,
-                        ));
+                        if let Some(e)=contact.actor {
+                            f.spawn((ImageNode::new(portraits.portrait(&mut images,e)),crate::portraits::PortraitOf(e),Node{width:Val::Percent(100.0),height:Val::Percent(100.0),..default()},Pickable::IGNORE));
+                        } else { f.spawn((text(sim.first.chars().take(1).chain(sim.last.chars().take(1)).collect::<String>(),20.0,Color::WHITE),Pickable::IGNORE)); }
                     });
                     row.spawn((Node { flex_direction: FlexDirection::Column, row_gap: Val::Px(3.0), ..default() }, Pickable::IGNORE)).with_children(|c| {
                         c.spawn((text(sim.full_name(), 15.0, Color::WHITE), Pickable::IGNORE));
@@ -373,10 +374,25 @@ fn row_clicks(
     mut hovered: Query<(&Interaction, &mut BackgroundColor), With<RelationRow>>,
     sims: Query<(&GlobalTransform, &InheritedVisibility), With<Sim>>,
     mut cam: Query<&mut SimsCamera>,
+    mut commands:Commands, selected:Query<(Entity,&Sim,&Relationships),With<Selected>>,
+    (story,dormant,index,pending):(Res<crate::story::TownStory>,Res<crate::household::Dormant>,Res<crate::residents::ResidentActors>,Res<crate::ghosts::PendingRels>),
+    mut pie:ResMut<crate::hud::PieMenu>, world:Res<crate::loading::CurrentWorld>,
 ) {
     for (i, row) in &rows {
+        if *i==Interaction::Pressed && !index.by_id.contains_key(&row.0) {
+            if let Ok((me,my_sim,rels))=selected.single() {
+                let contacts=crate::residents::contacts(me,rels,&pending,&index);
+                if let (Some(contact),Some(sim))=(contacts.iter().find(|c|c.id==row.0),crate::residents::contact_sim(&story,&dormant,row.0)) {
+                    if story.model(&row.0).is_none_or(|m|m.present()) {
+                        let options=crate::residents::remote_options(my_sim,&sim,&contact.relationship,&world.data,&mut pie);
+                        crate::hud::open_pie(&mut commands,&mut pie,Vec2::new(600.0,400.0),&sim.full_name(),me,options);
+                    }
+                }
+            }
+        }
         if *i == Interaction::Pressed
-            && let Ok((tf, vis)) = sims.get(row.0)
+            && let Some(&actor)=index.by_id.get(&row.0)
+            && let Ok((tf, vis)) = sims.get(actor)
             && vis.get()
             && let Ok(mut c) = cam.single_mut()
         {

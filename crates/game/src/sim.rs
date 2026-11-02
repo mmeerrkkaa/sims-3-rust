@@ -639,10 +639,26 @@ pub fn spawn_sim_full(
     let Some(model) = model else {
         return spawn_sim(commands, ctx.assets, ctx.render.mats, sim, pos);
     };
-    let scale = if sim.age == Age::Child { 1.0 } else { 1.0 };
+    let entity = spawn_sim_base(commands, ctx.assets, ctx.render.mats, sim, pos);
+    crate::simbody::spawn_sim_model(commands, entity, model, &mut ctx.render);
+    entity
+}
+
+/// A requested resident starts hidden with a complete root, including a plumbob.
+/// The existing body builder fills it after personal restoration, without a second
+/// temporary body or exposing default personal state to gameplay.
+pub(crate) fn spawn_sim_deferred(commands: &mut Commands, assets: &SimAssets,
+    mats: &mut Assets<StandardMaterial>, sim: Sim, pos: Vec3) -> Entity {
+    let entity = spawn_sim_base(commands, assets, mats, sim, pos);
+    commands.entity(entity).insert(crate::aging::NeedsNewBody);
+    entity
+}
+
+fn spawn_sim_base(commands: &mut Commands, assets: &SimAssets,
+    mats: &mut Assets<StandardMaterial>, sim: Sim, pos: Vec3) -> Entity {
     let entity = commands
         .spawn((
-            Transform::from_translation(pos).with_scale(Vec3::splat(scale)),
+            Transform::from_translation(pos),
             Visibility::default(),
             sim,
             Motives::default(),
@@ -652,12 +668,11 @@ pub fn spawn_sim_full(
             crate::anim::ClipPlayer::default(),
         ))
         .id();
-    crate::simbody::spawn_sim_model(commands, entity, model, &mut ctx.render);
     let plumbob = commands
         .spawn((
-            Mesh3d(ctx.assets.plumbob.clone()),
+            Mesh3d(assets.plumbob.clone()),
             PlumbobTint::default(),
-            MeshMaterial3d(ctx.render.mats.add(StandardMaterial {
+            MeshMaterial3d(mats.add(StandardMaterial {
                 base_color: Color::srgb(0.2, 0.95, 0.2),
                 emissive: LinearRgba::rgb(0.1, 0.9, 0.1),
                 ..default()

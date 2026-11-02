@@ -16,7 +16,9 @@ pub struct PieMenuPlugin;
 
 impl Plugin for PieMenuPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (enable, measure_pies, build_pies, warp_pointer, text_hover, mask_hover).chain());
+        // Finish all menu open/close commands before measuring their roots.
+        // Update handlers can replace a menu in the same frame.
+        app.add_systems(PostUpdate, (enable, measure_pies, build_pies, warp_pointer, text_hover, mask_hover).chain().before(bevy::ui::UiSystems::Prepare));
     }
 }
 

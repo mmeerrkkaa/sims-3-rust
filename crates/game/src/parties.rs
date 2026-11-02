@@ -100,7 +100,8 @@ impl Dress {
 /// Someone who could be asked (the game's `SimPickerInfo`).
 #[derive(Clone, Debug)]
 pub struct Candidate {
-    pub sim: Entity,
+    pub sim: u64,
+    pub actor: Option<Entity>,
     /// "Last, First" (the game's `LastFirstName`).
     pub name: String,
     /// The household's liking for them (the best of it), and what they are to the host ("Iris's
@@ -118,7 +119,7 @@ pub struct Choice {
     pub dress: Dress,
     /// The hour it starts (0-23).
     pub hour: u32,
-    pub guests: Vec<Entity>,
+    pub guests: Vec<u64>,
 }
 
 /// A party being arranged on the phone: what's to be chosen from, for the picker.
@@ -330,7 +331,8 @@ fn phone_party(
     mut notes: ResMut<Notifications>,
     mut hosts: Query<(Entity, &Sim, &mut ActionQueue, &Relationships, Option<&crate::careers::Job>, Option<&crate::wishes::Wishes>), With<HouseholdMember>>,
     others: Query<(Entity, &Sim, Has<crate::town::Townie>, Option<&Relationships>), (Or<(With<OffLot>, With<crate::town::Townie>)>, Without<Invited>, Without<HouseholdMember>)>,
-    graves: Query<(), With<crate::ghosts::Grave>>,
+    graves: Query<&crate::ghosts::Grave>,
+    (story,dormant,index,pending,mut requests):(Res<crate::story::TownStory>,Res<crate::household::Dormant>,Res<crate::residents::ResidentActors>,Res<crate::ghosts::PendingRels>,ResMut<crate::residents::MaterializeRequests>),
 ) {
     let calling: Vec<Entity> = hosts.iter().filter(|q| q.2.0.front().is_some_and(|a| matches!(a.kind, ActionKind::ThrowParty) && matches!(a.phase, Phase::Running(_)) && !a.cancel)).map(|q| q.0).collect();
     // (A call put down: its picker goes.)
@@ -340,6 +342,16 @@ fn phone_party(
     for host in calling {
         // Chosen (or called off): the call's over, and the party's arranged.
         if picker.done.as_ref().is_some_and(|d| d.0 == host) {
+            // Only guests actually chosen need actors. Keep the choice while
+            // the bounded factory finishes them; opening the list creates none.
+            if let Some((_,Some(choice)))=&picker.done {
+                let mut waiting=false;
+                for id in &choice.guests {
+                    if graves.iter().any(|g|g.sim.id==*id) || !story.model(id).is_none_or(|m|m.present()) {continue;}
+                    if !index.by_id.contains_key(id) && crate::residents::resident_state(&story,&dormant,*id).is_some() {requests.request(*id);waiting=true;}
+                }
+                if waiting {continue;}
+            }
             let (_, choice) = picker.done.take().unwrap();
             if let Ok(mut q) = hosts.get_mut(host)
                 && let Some(a) = q.2.0.front_mut()
@@ -347,7 +359,8 @@ fn phone_party(
                 a.cancel = true;
             }
             if let Some(c) = choice {
-                arrange(&mut commands, &clock, &hosts, &others, ui.as_deref(), &mut notes, host, c);
+                let guests=c.guests.iter().filter_map(|id|index.by_id.get(id).copied()).filter(|e|others.contains(*e)).collect();
+                arrange(&mut commands, &clock, &hosts, &others, ui.as_deref(), &mut notes, host, c, guests);
             }
             continue;
         }
@@ -359,26 +372,23 @@ fn phone_party(
         let busy = party.is_some();
         // Who the household knows, liked well enough to ask.
         let mut candidates: Vec<Candidate> = Vec::new();
-        for (e, s, _, _) in &others {
-            if s.age.is_little() {
-                continue;
+        let mut known=std::collections::BTreeMap::new();
+        for h in &hosts {
+            for contact in crate::residents::contacts(h.0,h.3,&pending,&index) {
+                known.entry(contact.id).and_modify(|value:&mut f32|*value=value.max(contact.relationship.friendship)).or_insert(contact.relationship.friendship);
             }
-            let known: Vec<f32> = hosts.iter().filter_map(|h| h.3.0.get(&e).map(|r| r.friendship)).collect();
-            let Some(liking) = known.iter().copied().reduce(f32::max) else { continue };
-            if liking < MIN_LIKING {
-                continue;
-            }
-            let rel = hosts.get(host).map(|h| h.3.get(e)).unwrap_or_default();
-            let state = crate::conversation::relationship_state(rel.friendship, rel.status, rel.romantic, rel.enemy);
-            let relation = ui.as_deref().and_then(|u| u.localize("Ui/Tooltip/Party:RelationshipWith")).unwrap_or_else(|| "{0.String}'s {1.String}".into()).replacen("{0.String}", &sim.first, 1).replacen("{1.String}", state, 1);
-            candidates.push(Candidate {
-                sim: e,
-                name: format!("{}, {}", s.last, s.first),
-                liking,
-                relation,
-                friend: liking >= FRIEND_THRESHOLD || rel.is_romance(),
-                coworker: job.is_some_and(|j| j.coworkers.contains(&s.id) || j.boss == Some(s.id)),
-            });
+        }
+        let host_contacts=hosts.get(host).map(|h|crate::residents::contacts(host,h.3,&pending,&index)).unwrap_or_default();
+        for (id,liking) in known {
+            if liking<MIN_LIKING || graves.iter().any(|g|g.sim.id==id) || !story.model(&id).is_none_or(|m|m.present()) {continue;}
+            let actor=index.by_id.get(&id).copied();
+            let person=match actor {Some(e)=>others.get(e).ok().map(|p|p.1.clone()),None=>crate::residents::contact_sim(&story,&dormant,id)};
+            let Some(person)=person else {continue};if person.age.is_little() {continue;}
+            let rel=host_contacts.iter().find(|c|c.id==id).map(|c|c.relationship).unwrap_or_default();
+            let state=crate::conversation::relationship_state(rel.friendship,rel.status,rel.romantic,rel.enemy);
+            let relation=ui.as_deref().and_then(|u|u.localize("Ui/Tooltip/Party:RelationshipWith")).unwrap_or_else(||"{0.String}'s {1.String}".into()).replacen("{0.String}",&sim.first,1).replacen("{1.String}",state,1);
+            candidates.push(Candidate{sim:id,actor,name:format!("{}, {}",person.last,person.first),liking,relation,
+                friend:liking>=FRIEND_THRESHOLD || rel.is_romance(),coworker:job.is_some_and(|j|j.coworkers.contains(&id)||j.boss==Some(id))});
         }
         candidates.sort_by(|a, b| b.liking.total_cmp(&a.liking).then_with(|| a.name.cmp(&b.name)));
         if busy || candidates.is_empty() {
@@ -415,6 +425,7 @@ fn arrange(
     notes: &mut Notifications,
     host: Entity,
     c: Choice,
+    guests:Vec<Entity>,
 ) {
     let Ok((_, hsim, _, hrels, _, wishes)) = hosts.get(host) else { return };
     let start = start_at(clock.minutes, c.hour);
@@ -422,7 +433,7 @@ fn arrange(
     let sure_host = crate::wishes::has(wishes, "LegendaryHost") || hsim.traits.contains(&Trait::PartyAnimal);
     let best = |e: Entity| hosts.iter().filter_map(|h| h.3.0.get(&e).map(|r| r.friendship)).reduce(f32::max).unwrap_or(0.0);
     let mut coming: Vec<Entity> = Vec::new();
-    for &g in &c.guests {
+    for &g in &guests {
         let friend = best(g) >= FRIEND_THRESHOLD || hrels.get(g).is_romance();
         if !rng.random_bool(coming_chance(best(g), friend, sure_host) as f64) {
             continue;
@@ -432,7 +443,7 @@ fn arrange(
         if rng.random_bool(BRING_A_FRIEND)
             && let Ok((_, gs, _, Some(grels))) = others.get(g)
         {
-            let friend = others.iter().find(|o| o.0 != g && !c.guests.contains(&o.0) && !coming.contains(&o.0) && !o.1.age.is_little() && (o.1.age == Age::Child) == (gs.age == Age::Child) && grels.friendship(o.0) >= FRIEND_THRESHOLD);
+            let friend = others.iter().find(|o| o.0 != g && !guests.contains(&o.0) && !coming.contains(&o.0) && !o.1.age.is_little() && (o.1.age == Age::Child) == (gs.age == Age::Child) && grels.friendship(o.0) >= FRIEND_THRESHOLD);
             if let Some(f) = friend {
                 coming.push(f.0);
             }
@@ -786,3 +797,6 @@ mod tests {
         assert_eq!(kinds(true, false), vec![PartyKind::House, PartyKind::Wedding, PartyKind::Birthday]);
     }
 }
+
+#[cfg(local_validation)]
+pub(crate) fn validate_cold_party(world:&mut World) { use bevy::ecs::system::RunSystemOnce; world.run_system_once(phone_party).unwrap(); }

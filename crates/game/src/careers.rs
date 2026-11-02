@@ -21,7 +21,7 @@ pub struct CareersPlugin;
 impl Plugin for CareersPlugin {
     fn build(&self, app: &mut App) {
         // Dialog answers and colleague discovery remain frame ingress; progression waits for ticks.
-        app.add_systems(Update, (career_path_answers, career_event_answers, find_colleagues).chain().run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Prepare))
+        app.add_systems(Update, (career_path_answers, career_event_answers, find_colleagues).chain().after(crate::residents::reconcile_daily).run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Prepare))
             .configure_sets(crate::clock::SimTick, (CommitmentPhase::Work, CommitmentPhase::Trips).chain().in_set(crate::clock::TickPhase::Commitments))
             .add_systems(crate::clock::SimTick, (work_flow, work_schedule, roll_career_events, run_career_events, promote_when_agreed, pay_pensions).chain().in_set(CommitmentPhase::Work));
         #[cfg(local_validation)]
@@ -1320,8 +1320,9 @@ fn find_colleagues(
     mut commands: Commands,
     clock: Res<GameClock>,
     mut workers: Query<(Entity, &Sim, &mut Job, &mut crate::social::Relationships), With<HouseholdMember>>,
-    town: Query<(Entity, &Sim, Option<&Job>, Has<Pension>, Option<&crate::town::Townie>), (Or<(With<crate::interact::OffLot>, With<crate::town::Townie>)>, Without<HouseholdMember>, Without<crate::ghosts::Ghost>)>,
+    town: Query<(Entity, &Sim, Option<&Job>, Has<Pension>, Option<&crate::town::Townie>), (Or<(With<crate::interact::OffLot>, With<crate::town::Townie>)>, Without<HouseholdMember>, Without<crate::ghosts::Ghost>, With<crate::residents::PersonalStateReady>)>,
     mut next: Local<f64>,
+    (mut story,mut requests):(ResMut<crate::story::TownStory>,ResMut<crate::residents::MaterializeRequests>),
 ) {
     // (Now and then is often enough.)
     if clock.minutes < *next {
@@ -1342,7 +1343,11 @@ fn find_colleagues(
         let track = job.track;
         let has_boss = job.info().has_boss;
         let (min, max) = job.career().coworkers;
-        let still = |id: &u64| people.contains_key(id);
+        let still = |id: &u64| people.contains_key(id) || story.residents.records.get(id)
+            .is_some_and(|r|r.state.is_some() && r.model.as_ref().is_none_or(|m|m.present()));
+        // Being absent from the scene does not end an existing employment link.
+        // Only the colleagues this job needs enter the bounded demand queue.
+        for id in job.boss.iter().chain(&job.coworkers).filter(|id|still(id) && !people.contains_key(id)) {requests.request(*id);}
         let stale = job.boss.is_some_and(|b| !still(&b) || !has_boss) || job.coworkers.iter().any(|c| !still(c));
         let short = (has_boss && job.boss.is_none()) || job.coworkers.len() < min as usize;
         if !stale && !short {
@@ -1405,13 +1410,15 @@ fn find_colleagues(
                 let mut j = Job::new(track);
                 j.level = at_least;
                 j.highest = at_least;
+                story.residents.model_or_insert_with(id,Default::default).job=Some((j.career().name.into(),j.level as u32+1));
                 commands.entity(other).insert(j);
             } else if let Some((_, level)) = j
                 && level < at_least
             {
+                story.residents.model_or_insert_with(id,Default::default).job=Some((job.career().name.into(),at_least as u32+1));
                 commands.entity(other).queue(move |mut ew: EntityWorldMut| {
                     if let Some(mut j) = ew.get_mut::<Job>() {
-                        j.level = j.level.max(at_least);
+                        j.level = j.level.max(at_least); j.highest=j.highest.max(j.level);
                     }
                 });
             }

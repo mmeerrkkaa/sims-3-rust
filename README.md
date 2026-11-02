@@ -37,6 +37,9 @@ a canonical resident record; old town records migrate on load. Household takeove
 that progression into personal state, and contacts bind when ordinary actors arrive.
 New ordinary NPC actors restore their personal checkpoint once at their actual arrival
 position; invitations and moves retain the live state instead of replaying the checkpoint.
+Contacts and guest pickers use resident IDs; requested contacts receive scene actors
+through a per-frame budget. Accepted home-invitation times survive saves, while idle acquaintances
+can remain without models after loading.
 Full live simulation tiers remain planned.
 Remaining gameplay systems, navigation and background residents
 are still being migrated. Performance gains are measured as each subsystem changes.
