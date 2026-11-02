@@ -125,7 +125,9 @@ pub fn prop_actor(suffix: &str) -> bool {
 /// The props a Sim is holding: which one, its entity and the slot (rig bone) it hangs from, and
 /// the object put away while its copy is in hand (the guitar played from where it stood).
 #[derive(Component, Default)]
-struct HeldProps(Vec<(usize, Entity, usize)>, Option<Entity>, HashMap<usize, bool>);
+pub(crate) struct HeldProps(Vec<(usize, Entity, usize)>, Option<Entity>, HashMap<usize, bool>);
+
+impl HeldProps {pub(crate) fn is_empty(&self)->bool {self.0.is_empty() && self.1.is_none()}}
 
 /// A prop in a Sim's hand.
 #[derive(Component)]

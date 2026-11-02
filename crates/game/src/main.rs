@@ -146,6 +146,7 @@ mod relations;
 mod roads;
 mod save;
 mod residents;
+mod resident_bodies;
 mod sim;
 mod simpanel;
 mod sound;

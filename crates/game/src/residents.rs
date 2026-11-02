@@ -474,7 +474,7 @@ pub(crate) fn materialize_requested(mut commands:Commands,mut requests:ResMut<Ma
         let at=exit.as_ref().map_or(Vec2::ZERO,|e|e.0);
         let position=Vec3::new(at.x,world.data.heightmap.sample(at.x,at.y),at.y);
         let entity=crate::sim::spawn_sim_deferred(&mut commands,&assets,&mut materials,sim,position);
-        commands.entity(entity).insert((crate::interact::OffLot,Visibility::Hidden,crate::interact::Skills::default(),
+        commands.entity(entity).insert((crate::interact::OffLot,Visibility::Hidden,crate::resident_bodies::UnloadedBody,crate::interact::Skills::default(),
             crate::interact::ActionQueue::default(),crate::interact::AutonomyTimer(10000.0),DespawnOnExit(crate::AppState::InGame)));
         existing.insert(id); created+=1;
     }

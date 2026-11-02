@@ -427,7 +427,7 @@ pub(crate) fn advance_players<const INITIALIZE: bool>(
     mut sims: Query<(Entity, &Sim, &SimAnim, Option<&ActionClip>, &mut ClipPlayer,
         Has<crate::little::OnFloor>, Option<&crate::little::ToddlerSkills>, Option<&Carrying>,
         Has<crate::jog::Jogging>, Option<&crate::nav::PathFollow>, Option<&crate::little::Pregnancy>,
-        Has<crate::supernatural::WolfForm>, Option<&mut crate::seatedtalk::TalkOverlay>, &Transform, Option<&crate::visit::OnLot>)>,
+        Has<crate::supernatural::WolfForm>, Option<&mut crate::seatedtalk::TalkOverlay>, &Transform, Option<&crate::visit::OnLot>), Without<crate::resident_bodies::UnloadedBody>>,
     mut cues: MessageWriter<crate::sound::ClipCue>,
 ) {
     let dt = if INITIALIZE { 0.0 } else if *state.get() == crate::AppState::CreateHousehold { time.delta_secs().min(0.1) } else { delta.0 };

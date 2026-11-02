@@ -997,6 +997,211 @@ fn saved_object(o: &GameObject, tf: &Transform, design: Option<&crate::objects::
     }
 }
 
+/// The same rich personal snapshot is used for disk saves and resident handoffs.
+/// Keep component coverage here so evicting a model never invents a slim save.
+pub(crate) type CapturePeople<'w,'s> = Query<'w, 's,
+        (
+            Entity,
+            &'static Sim,
+            &'static Transform,
+            &'static Floor,
+            &'static Motives,
+            Option<&'static Skills>,
+            &'static Moodlets,
+            Option<&'static Job>,
+            &'static Relationships,
+            Has<HouseholdMember>,
+            Has<Selected>,
+            Has<OffLot>,
+            Has<Visitor>,
+            Option<&'static crate::wishes::Wishes>,
+            (
+                Option<&'static crate::aging::Aging>,
+                Option<&'static crate::little::Pregnancy>,
+                Option<&'static crate::opportunities::SimOpportunities>,
+                (Option<&'static crate::visit::OnLot>, Has<crate::visit::Trip>, Has<crate::homes::Resident>),
+                Option<&'static crate::lifetime::LifetimeWish>,
+                Option<&'static crate::writing::Author>,
+                Option<&'static crate::meals::KnownRecipes>,
+                Option<&'static crate::chess::ChessRecord>,
+                Option<&'static crate::inventory::Inventory>,
+                Option<&'static crate::little::ToddlerSkills>,
+                Option<&'static crate::careers::Pension>,
+                Option<&'static crate::journal::SkillJournal>,
+                Option<&'static crate::rabbitholes::SchoolGrades>,
+                Option<&'static crate::rabbitholes::Homework>,
+                (
+                    Option<&'static crate::rabbitholes::AtRabbitHole>,
+                    Option<&'static crate::weather::BodyTemperature>,
+                    Option<&'static crate::simbody::Wearing>,
+                    Has<crate::simbody::ChangedInto>,
+                    Option<&'static crate::portraits::Staged>,
+                    Option<&'static crate::classes::ClassesTaken>,
+                    Option<&'static crate::skillbooks::SkillBooks>,
+                    (Option<&'static crate::novels::Novels>, Has<crate::computertraits::BookClub>, Option<&'static crate::timeoff::TimeOff>, Option<&'static crate::charity::Charities>),
+                    Option<&'static crate::town::Townie>,
+                    Option<&'static crate::nav::PathFollow>,
+                    Option<&'static crate::visit::LotGuest>,
+                ),
+            ),
+        ),
+        Without<crate::services::ServiceNpc>,
+    >;
+
+#[derive(bevy::ecs::system::SystemParam)]
+pub(crate) struct CaptureResidents<'w,'s> {
+    people: CapturePeople<'w,'s>,
+    identities: Query<'w,'s,(Entity,&'static Sim),Without<crate::services::ServiceNpc>>,
+    invitations: Query<'w,'s,&'static Invited>,
+    pending: Option<Res<'w,crate::ghosts::PendingRels>>,
+    world: Res<'w,CurrentWorld>,
+    ui: Option<Res<'w,crate::icons::GameUi>>,
+}
+impl CaptureResidents<'_,'_> {
+    pub(crate) fn ids(&self)->HashMap<Entity,u64> {self.identities.iter().map(|(e,s)|(e,s.id)).collect()}
+    pub(crate) fn relationships(&self,owner:Entity,rels:&Relationships,ids:&HashMap<Entity,u64>)->Vec<SavedRel> {
+        let mut rows=saved_rels(rels,ids);
+        let mut present:std::collections::HashSet<_>=rows.iter().map(|r|r.with).collect();
+        if let Some(pending)=self.pending.as_deref() {
+            rows.extend(pending.0.iter().filter(|(e,r)|*e==owner && present.insert(r.with)).map(|(_,r)|r.clone()));
+        }
+        rows
+    }
+    pub(crate) fn capture_matching(&self,include:impl Fn(Entity)->bool)->Vec<SavedSim> {
+        let ids=self.ids();
+        let world=&*self.world;
+        let ui=self.ui.as_deref();
+        let invitations=&self.invitations;
+        // A cold resident has no Entity to put into Relationships yet. Those stable-ID
+        // links live in PendingRels and must survive another save before materialization.
+        let mut unresolved: HashMap<Entity, Vec<&SavedRel>> = HashMap::new();
+        if let Some(pending) = self.pending.as_deref() {
+            for (owner, relationship) in &pending.0 { unresolved.entry(*owner).or_default().push(relationship); }
+        }
+        let checkpoint_rels = |owner: Entity, rels: &Relationships| {
+            let mut rows = saved_rels(rels, &ids);
+            if let Some(pending) = unresolved.get(&owner) {
+                let mut present: std::collections::HashSet<_> = rows.iter().map(|r| r.with).collect();
+                rows.extend(pending.iter().filter(|r| present.insert(r.with)).map(|r| (*r).clone()));
+            }
+            rows
+        };
+        let mut saved = Vec::new();
+        for (e, sim, tf, floor, motives, skills, moodlets, job, rels, member, selected, away, visiting, wishes, (aging, pregnancy, opps, out, ltw, author, recipes, chess, inventory, toddler, pension, journal, school, homework, (rabbit, temperature, wearing, outfit_chosen, staged, classes, books, (novels, book_club, time_off, charities), townie, street_path, guest))) in &self.people {
+            if !include(e) {continue;}
+            if let Some(s) = staged {
+                debug!("saving {} during portrait: scene {:?}, gameplay {:?}", sim.first, tf.translation, s.original.translation);
+            }
+            let tf = staged.map_or(tf, |s| &s.original);
+            let (position, level) = (tf.translation.to_array(), floor.0);
+            let guid = |i: usize| ui.as_ref().and_then(|u| u.data.opportunities.get(i)).map(|o| o.guid.clone());
+            saved.push(SavedSim {
+                id: sim.id,
+                invited_at: invitations.get(e).ok().map(|i| i.arrive_at),
+                look: sim.look,
+                first: sim.first.clone(),
+                last: sim.last.clone(),
+                female: sim.female,
+                age: age_name(sim.age).into(),
+                traits: sim.traits.iter().map(|t| t.name().to_string()).collect(),
+                skin: rgb(sim.skin),
+                hair: rgb(sim.hair),
+                top: rgb(sim.top),
+                bottom: rgb(sim.bottom),
+                member,
+                selected,
+                whereabouts: if member { "home" } else if away { "away" } else if visiting { "visiting" } else { "away" }.into(),
+                world_location: crate::visit::saved_location(&world.data, out.0, out.1, rabbit),
+                lot_role: if out.2 { Some(s3sim::residents::LotRole::Resident) } else { guest.map(|g| s3sim::residents::LotRole::Guest { leave_at: s3sim::tick_at(g.leave_at) }) },
+                background: townie.filter(|_| !member).map(|t| s3sim::residents::BackgroundState {
+                    next_walk: t.next_walk,
+                    walk: street_path.filter(|p| t.walking && !p.done).and_then(|p| p.waypoints.last().map(|w| s3sim::residents::StreetWalk {
+                        destination: w.p.to_array(), speed: p.speed, jogging: p.style == crate::nav::WalkStyle::Jog,
+                    })),
+                }),
+                position,
+                yaw: tf.rotation.to_euler(EulerRot::YXZ).0,
+                floor: level,
+                motives: motives.0,
+                skills: skills.map_or_else(Vec::new, |k| k.0.iter().map(|(k, v)| (k.to_string(), *v)).collect()),
+                moodlets: moodlets.0.iter().filter(|m| m.until.is_finite()).map(|m| (m.kind.def().name.to_string(), m.until)).collect(),
+                job: job.map(|j| SavedJob {
+                    track: j.career().name.into(),
+                    level: j.level,
+                    performance: j.performance,
+                    last_day: j.last_day,
+                    branch: j.path().branch.into(),
+                    tone: (j.tone != crate::careers::WorkTone::Normal).then(|| j.tone.name().into()),
+                    boss: j.boss,
+                    coworkers: j.coworkers.clone(),
+                    highest: j.highest,
+                    raise: j.raise,
+                    warned_at: j.warned_at,
+                    tally: j.tally.clone(),
+                }),
+                relationships: checkpoint_rels(e, rels),
+                lifetime_happiness: wishes.map_or(0, |w| w.points),
+                happiness_fraction: wishes.map_or(0.0, |w| w.mood_fraction),
+                body_temperature: temperature.copied().unwrap_or_default(),
+                offered_wishes: wishes.map(|w| w.offered.clone()).unwrap_or_default(),
+                promised_wishes: wishes.map(|w| w.promised.clone()).unwrap_or_default(),
+                next_wish_offer: wishes.map(|w| w.next_offer),
+                dream_state: wishes.and_then(|w| w.dream_state.clone()),
+                outfit: saved_outfit(&sim.outfit),
+            accessories: sim.outfit.accessories.clone(),
+            eyeliner: sim.outfit.eyeliner,
+            blush: sim.outfit.blush,
+            brows: sim.outfit.brows,
+            skin_details: sim.outfit.skin_details.clone(),
+            body_hair: sim.outfit.body_hair.clone(),
+                wearing: wearing.map(|w| w.0),
+                outfit_chosen,
+                rewards: wishes.map(|w| w.rewards.clone()).unwrap_or_default(),
+                aging: aging.map(|a| (a.days, a.elder_span)),
+                elder_risk: aging.and_then(|a| a.elder_risk),
+                school_grade: school.map(|g| g.0),
+                homework: homework.is_some(),
+                homework_progress: homework.map_or(0.0, |h| h.0),
+                school_visit: rabbit.filter(|r| std::ptr::eq(r.activity, &crate::rabbitholes::SCHOOL)).map(|r| (r.inside_from, r.until)),
+                pregnancy: pregnancy.map(|p| (p.since, p.other_parent.and_then(|o| ids.get(&o).copied()), p.stage)),
+                pregnancy_mood: pregnancy.map(|p| p.mood),
+                pregnancy_sway: pregnancy.map(|p| (p.girl_bias, p.kids_hours)),
+                shape: Some((sim.weight, sim.fitness)),
+                opportunities: opps.map(|o| o.active.iter().filter_map(|a| Some((guid(a.index)?, a.deadline))).collect()).unwrap_or_default(),
+                opportunities_done: opps.map(|o| o.done.clone()).unwrap_or_default(),
+                opportunities_visited: opps.map(|o| o.active.iter().filter(|a| a.visited).filter_map(|a| guid(a.index)).collect()).unwrap_or_default(),
+                opportunities_with: opps.map(|o| o.active.iter().filter_map(|a| Some((guid(a.index)?, a.with.as_ref()?.0, a.with.as_ref()?.1.clone()))).collect()).unwrap_or_default(),
+                lifetime_wish: ltw.map(|l| SavedLifetimeWish { check: l.def().check.into(), fulfilled: l.fulfilled, careers: l.careers.clone(), raised: l.raised, rich_spouse: l.rich_spouse }),
+                author: author.cloned(),
+                recipes: recipes.map(|r| r.0.clone()).unwrap_or_default(),
+                classes: classes.map(|c| c.0.clone()).unwrap_or_default(),
+                skill_books: books.map(|b| b.0.clone()).unwrap_or_default(),
+                novels: novels.map(|b| b.0.clone()).unwrap_or_default(),
+                book_club,
+                time_off: time_off.cloned(),
+                charities: charities.cloned(),
+                chess: chess.copied(),
+                inventory: inventory.cloned().unwrap_or_default(),
+                toddler: toddler.copied(),
+                eyes: Some(rgb(sim.eyes)),
+                brow_hair: sim.brow_hair.map(rgb),
+                voice: Some(sim.voice),
+                voice_pitch: (sim.voice_pitch != 0.5).then_some(sim.voice_pitch),
+                bio: sim.bio.clone(),
+                pension: pension.copied(),
+                favorites: Some(sim.favorites.clone()),
+                journal: journal.cloned().unwrap_or_default(),
+                designs: sim.outfit.designs.clone(),
+                styles: sim.outfit.styles.clone(),
+                face: sim.face.clone(),
+                face_presets: sim.face_presets.clone(),
+                occult: sim.occult.map(|o| o.name().to_string()),
+            });
+        }
+        saved
+    }
+}
+
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub(crate) fn save_game(
     mut commands: Commands,
@@ -1013,61 +1218,12 @@ pub(crate) fn save_game(
         crate::meals::SavableMeals,
         Res<crate::telescope::Discoveries>,
     ),
-    sims: Query<
-        (
-            Entity,
-            &Sim,
-            &Transform,
-            &Floor,
-            &Motives,
-            Option<&Skills>,
-            &Moodlets,
-            Option<&Job>,
-            &Relationships,
-            Has<HouseholdMember>,
-            Has<Selected>,
-            Has<OffLot>,
-            Has<Visitor>,
-            Option<&crate::wishes::Wishes>,
-            (
-                Option<&crate::aging::Aging>,
-                Option<&crate::little::Pregnancy>,
-                Option<&crate::opportunities::SimOpportunities>,
-                (Option<&crate::visit::OnLot>, Has<crate::visit::Trip>, Has<crate::homes::Resident>),
-                Option<&crate::lifetime::LifetimeWish>,
-                Option<&crate::writing::Author>,
-                Option<&crate::meals::KnownRecipes>,
-                Option<&crate::chess::ChessRecord>,
-                Option<&crate::inventory::Inventory>,
-                Option<&crate::little::ToddlerSkills>,
-                Option<&crate::careers::Pension>,
-                Option<&crate::journal::SkillJournal>,
-                Option<&crate::rabbitholes::SchoolGrades>,
-                Option<&crate::rabbitholes::Homework>,
-                (
-                    Option<&crate::rabbitholes::AtRabbitHole>,
-                    Option<&crate::weather::BodyTemperature>,
-                    Option<&crate::simbody::Wearing>,
-                    Has<crate::simbody::ChangedInto>,
-                    Option<&crate::portraits::Staged>,
-                    Option<&crate::classes::ClassesTaken>,
-                    Option<&crate::skillbooks::SkillBooks>,
-                    (Option<&crate::novels::Novels>, Has<crate::computertraits::BookClub>, Option<&crate::timeoff::TimeOff>, Option<&crate::charity::Charities>),
-                    Option<&crate::town::Townie>,
-                    Option<&crate::nav::PathFollow>,
-                    Option<&crate::visit::LotGuest>,
-                ),
-            ),
-        ),
-        Without<crate::services::ServiceNpc>,
-    >,
-    (bought, _exit, graves, ghosts, pending_rels, invitations): (
+    capture: CaptureResidents,
+    (bought, _exit, graves, ghosts): (
         Query<(&GameObject, &Transform, Option<&crate::objects::Design>, Option<&crate::paintings::Hung>), With<Bought>>,
         Option<Res<crate::interact::LotExit>>,
         Query<(Entity, &crate::ghosts::Grave, &Transform), Without<crate::buyhistory::HistoryHidden>>,
         Query<(Entity, &Sim, &crate::ghosts::Ghost, &Relationships)>,
-        Option<Res<crate::ghosts::PendingRels>>,
-        Query<&Invited>,
     ),
     ui: Option<Res<crate::icons::GameUi>>,
     mut notes: ResMut<Notifications>,
@@ -1107,133 +1263,9 @@ pub(crate) fn save_game(
         return;
     }
     let Some(hh) = household else { return };
-    // (The ghosts too: whom the living know among the dead.)
-    let ids: HashMap<Entity, u64> = sims.iter().map(|q| (q.0, q.1.id)).chain(ghosts.iter().map(|g| (g.0, g.1.id))).collect();
-    // A cold resident has no Entity to put into Relationships yet. Those stable-ID
-    // links live in PendingRels and must survive another save before materialization.
-    let mut unresolved: HashMap<Entity, Vec<&SavedRel>> = HashMap::new();
-    if let Some(pending) = &pending_rels {
-        for (owner, relationship) in &pending.0 { unresolved.entry(*owner).or_default().push(relationship); }
-    }
-    let checkpoint_rels = |owner: Entity, rels: &Relationships| {
-        let mut rows = saved_rels(rels, &ids);
-        if let Some(pending) = unresolved.get(&owner) {
-            let mut present: std::collections::HashSet<_> = rows.iter().map(|r| r.with).collect();
-            rows.extend(pending.iter().filter(|r| present.insert(r.with)).map(|r| (*r).clone()));
-        }
-        rows
-    };
-    let mut saved = Vec::new();
-    for (e, sim, tf, floor, motives, skills, moodlets, job, rels, member, selected, away, visiting, wishes, (aging, pregnancy, opps, out, ltw, author, recipes, chess, inventory, toddler, pension, journal, school, homework, (rabbit, temperature, wearing, outfit_chosen, staged, classes, books, (novels, book_club, time_off, charities), townie, street_path, guest))) in &sims {
-        if let Some(s) = staged {
-            debug!("saving {} during portrait: scene {:?}, gameplay {:?}", sim.first, tf.translation, s.original.translation);
-        }
-        let tf = staged.map_or(tf, |s| &s.original);
-        let (position, level) = (tf.translation.to_array(), floor.0);
-        let guid = |i: usize| ui.as_ref().and_then(|u| u.data.opportunities.get(i)).map(|o| o.guid.clone());
-        saved.push(SavedSim {
-            id: sim.id,
-            invited_at: invitations.get(e).ok().map(|i| i.arrive_at),
-            look: sim.look,
-            first: sim.first.clone(),
-            last: sim.last.clone(),
-            female: sim.female,
-            age: age_name(sim.age).into(),
-            traits: sim.traits.iter().map(|t| t.name().to_string()).collect(),
-            skin: rgb(sim.skin),
-            hair: rgb(sim.hair),
-            top: rgb(sim.top),
-            bottom: rgb(sim.bottom),
-            member,
-            selected,
-            whereabouts: if member { "home" } else if away { "away" } else if visiting { "visiting" } else { "away" }.into(),
-            world_location: crate::visit::saved_location(&world.data, out.0, out.1, rabbit),
-            lot_role: if out.2 { Some(s3sim::residents::LotRole::Resident) } else { guest.map(|g| s3sim::residents::LotRole::Guest { leave_at: s3sim::tick_at(g.leave_at) }) },
-            background: townie.filter(|_| !member).map(|t| s3sim::residents::BackgroundState {
-                next_walk: t.next_walk,
-                walk: street_path.filter(|p| t.walking && !p.done).and_then(|p| p.waypoints.last().map(|w| s3sim::residents::StreetWalk {
-                    destination: w.p.to_array(), speed: p.speed, jogging: p.style == crate::nav::WalkStyle::Jog,
-                })),
-            }),
-            position,
-            yaw: tf.rotation.to_euler(EulerRot::YXZ).0,
-            floor: level,
-            motives: motives.0,
-            skills: skills.map_or_else(Vec::new, |k| k.0.iter().map(|(k, v)| (k.to_string(), *v)).collect()),
-            moodlets: moodlets.0.iter().filter(|m| m.until.is_finite()).map(|m| (m.kind.def().name.to_string(), m.until)).collect(),
-            job: job.map(|j| SavedJob {
-                track: j.career().name.into(),
-                level: j.level,
-                performance: j.performance,
-                last_day: j.last_day,
-                branch: j.path().branch.into(),
-                tone: (j.tone != crate::careers::WorkTone::Normal).then(|| j.tone.name().into()),
-                boss: j.boss,
-                coworkers: j.coworkers.clone(),
-                highest: j.highest,
-                raise: j.raise,
-                warned_at: j.warned_at,
-                tally: j.tally.clone(),
-            }),
-            relationships: checkpoint_rels(e, rels),
-            lifetime_happiness: wishes.map_or(0, |w| w.points),
-            happiness_fraction: wishes.map_or(0.0, |w| w.mood_fraction),
-            body_temperature: temperature.copied().unwrap_or_default(),
-            offered_wishes: wishes.map(|w| w.offered.clone()).unwrap_or_default(),
-            promised_wishes: wishes.map(|w| w.promised.clone()).unwrap_or_default(),
-            next_wish_offer: wishes.map(|w| w.next_offer),
-            dream_state: wishes.and_then(|w| w.dream_state.clone()),
-            outfit: saved_outfit(&sim.outfit),
-        accessories: sim.outfit.accessories.clone(),
-        eyeliner: sim.outfit.eyeliner,
-        blush: sim.outfit.blush,
-        brows: sim.outfit.brows,
-        skin_details: sim.outfit.skin_details.clone(),
-        body_hair: sim.outfit.body_hair.clone(),
-            wearing: wearing.map(|w| w.0),
-            outfit_chosen,
-            rewards: wishes.map(|w| w.rewards.clone()).unwrap_or_default(),
-            aging: aging.map(|a| (a.days, a.elder_span)),
-            elder_risk: aging.and_then(|a| a.elder_risk),
-            school_grade: school.map(|g| g.0),
-            homework: homework.is_some(),
-            homework_progress: homework.map_or(0.0, |h| h.0),
-            school_visit: rabbit.filter(|r| std::ptr::eq(r.activity, &crate::rabbitholes::SCHOOL)).map(|r| (r.inside_from, r.until)),
-            pregnancy: pregnancy.map(|p| (p.since, p.other_parent.and_then(|o| ids.get(&o).copied()), p.stage)),
-            pregnancy_mood: pregnancy.map(|p| p.mood),
-            pregnancy_sway: pregnancy.map(|p| (p.girl_bias, p.kids_hours)),
-            shape: Some((sim.weight, sim.fitness)),
-            opportunities: opps.map(|o| o.active.iter().filter_map(|a| Some((guid(a.index)?, a.deadline))).collect()).unwrap_or_default(),
-            opportunities_done: opps.map(|o| o.done.clone()).unwrap_or_default(),
-            opportunities_visited: opps.map(|o| o.active.iter().filter(|a| a.visited).filter_map(|a| guid(a.index)).collect()).unwrap_or_default(),
-            opportunities_with: opps.map(|o| o.active.iter().filter_map(|a| Some((guid(a.index)?, a.with.as_ref()?.0, a.with.as_ref()?.1.clone()))).collect()).unwrap_or_default(),
-            lifetime_wish: ltw.map(|l| SavedLifetimeWish { check: l.def().check.into(), fulfilled: l.fulfilled, careers: l.careers.clone(), raised: l.raised, rich_spouse: l.rich_spouse }),
-            author: author.cloned(),
-            recipes: recipes.map(|r| r.0.clone()).unwrap_or_default(),
-            classes: classes.map(|c| c.0.clone()).unwrap_or_default(),
-            skill_books: books.map(|b| b.0.clone()).unwrap_or_default(),
-            novels: novels.map(|b| b.0.clone()).unwrap_or_default(),
-            book_club,
-            time_off: time_off.cloned(),
-            charities: charities.cloned(),
-            chess: chess.copied(),
-            inventory: inventory.cloned().unwrap_or_default(),
-            toddler: toddler.copied(),
-            eyes: Some(rgb(sim.eyes)),
-            brow_hair: sim.brow_hair.map(rgb),
-            voice: Some(sim.voice),
-            voice_pitch: (sim.voice_pitch != 0.5).then_some(sim.voice_pitch),
-            bio: sim.bio.clone(),
-            pension: pension.copied(),
-            favorites: Some(sim.favorites.clone()),
-            journal: journal.cloned().unwrap_or_default(),
-            designs: sim.outfit.designs.clone(),
-            styles: sim.outfit.styles.clone(),
-            face: sim.face.clone(),
-            face_presets: sim.face_presets.clone(),
-            occult: sim.occult.map(|o| o.name().to_string()),
-        });
-    }
+    let ids=capture.ids();
+    let checkpoint_rels=|owner,rels:&Relationships|capture.relationships(owner,rels,&ids);
+    let mut saved=capture.capture_matching(|_|true);
     for resident in &mut saved {
         crate::residents::checkpoint(&mut story, resident, clock.minutes);
         if resident.member && let Some(home) = world.data.lots.get(hh.lot_index) {
@@ -1322,7 +1354,7 @@ pub(crate) fn save_game(
         meals: ui.as_deref().map(|u| crate::meals::saved_meals(&meals, &u.data)).unwrap_or_default(),
         weather: Some(weather.clone()),
         pets: crate::pets::saved(&pets, pet_data.0.as_deref()),
-        dormant: dormant.kept(&sims.iter().filter(|q| q.9).map(|q| q.1.id).collect::<Vec<_>>()),
+        dormant: dormant.kept(&capture.people.iter().filter(|q| q.9).map(|q| q.1.id).collect::<Vec<_>>()),
         homeless: false,
         deck: true,
         family_inventory: family_inventory.0.clone(),

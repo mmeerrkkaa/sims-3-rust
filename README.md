@@ -40,6 +40,9 @@ position; invitations and moves retain the live state instead of replaying the c
 Contacts and guest pickers use resident IDs; requested contacts receive scene actors
 through a per-frame budget. Accepted home-invitation times survive saves, while idle acquaintances
 can remain without models after loading.
+Remote contacts start without a 3D body. Idle off-lot bodies have a bounded cache
+and reload for visible activity or portraits. Logical entities and
+personal state remain alive while Entity-based gameplay is being migrated.
 Full live simulation tiers remain planned.
 Remaining gameplay systems, navigation and background residents
 are still being migrated. Performance gains are measured as each subsystem changes.

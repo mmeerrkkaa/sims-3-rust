@@ -485,7 +485,7 @@ fn rebuild_bodies(
     mut commands: Commands,
     sims: Query<
         (Entity, &Sim, &Children, Option<&crate::simbody::Wearing>, Option<&crate::careers::Job>, Option<&crate::simbody::ServiceUniform>, Has<crate::supernatural::WolfForm>),
-        With<NeedsNewBody>,
+        (With<NeedsNewBody>, Without<crate::resident_bodies::UnloadedBody>),
     >,
     parts: Query<(), With<crate::simbody::SimModelPart>>,
     data: Option<Res<crate::baked::Baked>>,

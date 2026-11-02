@@ -97,6 +97,11 @@ pub struct Portraits {
 }
 
 impl Portraits {
+    /// A queued or staged portrait needs its body, even while the Sim is off lot.
+    pub(crate) fn needs_body(&self,sim:Entity)->bool {
+        self.busy.as_ref().is_some_and(|shot|shot.sim==sim) || self.queue.contains(&sim)
+    }
+
     /// A Sim's portrait (blank until it has been taken). It changes handle when retaken: UI
     /// showing it carries [`PortraitOf`] to follow along.
     pub fn portrait(&mut self, images: &mut Assets<Image>, sim: Entity) -> Handle<Image> {
