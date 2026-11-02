@@ -3580,6 +3580,13 @@ pub fn spawn_building(
     for (hi, (walls, caps)) in merged.into_iter().zip(merged_caps).enumerate() {
         let mut parts: Vec<Entity> = Vec::new();
         for (style, buf) in walls {
+            // A style's walls may be entirely removed by openings at the cut
+            // height. Such a buffer has no surface and must not be uploaded.
+            if buf.is_empty() {
+                #[cfg(local_validation)]
+                if std::env::var_os("RESIDENT_HANDOFF_TEST").is_some() { info!("RESIDENT_HANDOFF empty merged wall omitted: height={hi} style={style:?}"); }
+                continue;
+            }
             let mat = material(assets, ctx, style);
             parts.push(commands.spawn((Mesh3d(ctx.meshes.add(buf.mesh())), MeshMaterial3d(mat))).id());
         }

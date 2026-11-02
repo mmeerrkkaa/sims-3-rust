@@ -208,6 +208,49 @@ pub(crate) fn restore_arrivals(mut commands: Commands, pending: Option<Res<Resto
     commands.remove_resource::<RestoreResidents>();
 }
 
+/// The actor owns its detailed personal state after the initial handoff. Ordinary
+/// moves and invitations must never rewind it to an older city checkpoint.
+#[derive(Component)]
+pub(crate) struct PersonalStateReady;
+
+pub(crate) fn prepare_personal_state(mut commands: Commands,
+    actors: Query<(Entity, Has<crate::sim::HouseholdMember>, Has<crate::interact::Skills>, Has<crate::sim::Motives>, Has<crate::social::Relationships>),
+        (With<crate::sim::Sim>, Without<PersonalStateReady>, Without<crate::services::ServiceNpc>, Without<crate::ghosts::Ghost>)>) {
+    for (entity, member, skills, motives, relationships) in &actors {
+        if member { commands.entity(entity).insert(PersonalStateReady); continue; }
+        if !skills { commands.entity(entity).insert(crate::interact::Skills::default()); }
+        if !motives { commands.entity(entity).insert(crate::sim::Motives::default()); }
+        if !relationships { commands.entity(entity).insert(crate::social::Relationships::default()); }
+    }
+}
+
+/// All ordinary creation paths enter this handoff, including late home residents
+/// and background actors. Played-household snapshots outrank the coarse city model.
+pub(crate) fn hydrate_new_actors(mut commands: Commands, clock: Res<GameClock>,
+    world: Res<crate::loading::CurrentWorld>, story: Res<TownStory>, dormant: Res<crate::household::Dormant>,
+    unready: Query<Entity, (With<crate::sim::Sim>, Without<PersonalStateReady>, Without<crate::sim::HouseholdMember>, Without<crate::services::ServiceNpc>, Without<crate::ghosts::Ghost>)>,
+    mut people: crate::save::RestorePeople, mut pending: ResMut<crate::ghosts::PendingRels>) {
+    if unready.is_empty() { return; }
+    let ids = people.iter().map(|p| (p.0, p.1.id)).collect();
+    let mut snapshots = Vec::new();
+    let mut restored = std::collections::HashSet::new();
+    for entity in &unready {
+        let Ok((_, sim, _, _, _, _, _, relations)) = people.get(entity) else { continue };
+        let snapshot = dormant.0.iter().flat_map(|d| &d.sims).find(|s| s.member && s.id == sim.id).cloned()
+            .or_else(|| projected_state(&story, &sim.id, clock.minutes));
+        let Some(mut snapshot) = snapshot else { commands.entity(entity).insert(PersonalStateReady); continue };
+        for row in crate::save::saved_rels(relations, &ids) {
+            if !snapshot.relationships.iter().any(|r| r.with == row.with) { snapshot.relationships.push(row); }
+        }
+        for (_, row) in pending.0.iter().filter(|(owner, _)| *owner == entity) {
+            if !snapshot.relationships.iter().any(|r| r.with == row.with) { snapshot.relationships.push(row.clone()); }
+        }
+        snapshots.push(snapshot); restored.insert(entity);
+    }
+    let unmet = crate::save::restore_arrived_people(&mut commands, clock.minutes, &world, &mut people, &snapshots);
+    pending.0.retain(|(owner, _)| !restored.contains(owner)); pending.0.extend(unmet);
+}
+
 /// Stable ID bindings cover ordinary arrivals as well as ghosts. The index is rebuilt
 /// only when actors change or a loaded scene replaces the previous one.
 #[derive(Resource, Default)]

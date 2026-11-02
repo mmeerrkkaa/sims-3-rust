@@ -35,6 +35,8 @@ from model preparation. Unmet background residents and street walks survive save
 loading keeps a small background actor cohort. Daily age, career and couple changes share
 a canonical resident record; old town records migrate on load. Household takeover projects
 that progression into personal state, and contacts bind when ordinary actors arrive.
+New ordinary NPC actors restore their personal checkpoint once at their actual arrival
+position; invitations and moves retain the live state instead of replaying the checkpoint.
 Full live simulation tiers remain planned.
 Remaining gameplay systems, navigation and background residents
 are still being migrated. Performance gains are measured as each subsystem changes.

@@ -993,7 +993,7 @@ fn saved_object(o: &GameObject, tf: &Transform, design: Option<&crate::objects::
 }
 
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
-fn save_game(
+pub(crate) fn save_game(
     mut commands: Commands,
     (mut requests, mut snapshots, mut save_as, dormant): (MessageReader<SaveRequest>, MessageReader<SnapshotRequest>, MessageReader<SaveAsRequest>, Res<crate::household::Dormant>),
     clock: Res<GameClock>,
@@ -1371,10 +1371,10 @@ fn restore_clothing(ec: &mut EntityCommands, saved: &SavedSim) {
 }
 
 /// Restore school progress, including absence of homework or student status.
-fn restore_school(ec: &mut EntityCommands, saved: &SavedSim) {
+fn restore_school(ec: &mut EntityCommands, saved: &SavedSim, restore_trip: bool) {
     // Explicit removal also handles a restored student whose homework was completed.
-    ec.remove::<(crate::rabbitholes::SchoolGrades, crate::rabbitholes::Homework, crate::rabbitholes::AtRabbitHole)>()
-        .insert(Visibility::Inherited);
+    ec.remove::<(crate::rabbitholes::SchoolGrades, crate::rabbitholes::Homework)>();
+    if restore_trip { ec.remove::<crate::rabbitholes::AtRabbitHole>().insert(Visibility::Inherited); }
     if matches!(age_from_name(&saved.age), Age::Child | Age::Teen) {
         if let Some(grade) = saved.school_grade {
             ec.insert(crate::rabbitholes::SchoolGrades(grade.clamp(0.0, 100.0)));
@@ -1382,7 +1382,7 @@ fn restore_school(ec: &mut EntityCommands, saved: &SavedSim) {
         if saved.homework {
             ec.insert(crate::rabbitholes::Homework(saved.homework_progress.clamp(0.0, 100.0), false));
         }
-        if let Some((inside_from, until)) = saved.school_visit {
+        if restore_trip && let Some((inside_from, until)) = saved.school_visit {
             ec.insert((crate::rabbitholes::AtRabbitHole {
                 lot: usize::MAX,
                 activity: &crate::rabbitholes::SCHOOL,
@@ -1401,20 +1401,55 @@ pub(crate) type RestorePeople<'w, 's> = Query<'w, 's,
 pub(crate) fn restore_people<'a>(commands: &mut Commands, minutes: f64, deck: bool, world: &CurrentWorld,
     building: Option<&crate::building::ActiveBuilding>, sims: &mut RestorePeople,
     snapshots: impl IntoIterator<Item = &'a SavedSim>) -> Vec<(Entity, SavedRel)> {
+    restore_people_at(commands, minutes, deck, world, building, sims, snapshots, true)
+}
+
+/// A new actor receives personal state at its actual arrival placement. Scene roles,
+/// routes, selection and household membership belong to the arrival, not the checkpoint.
+pub(crate) fn restore_arrived_people<'a>(commands: &mut Commands, minutes: f64, world: &CurrentWorld,
+    sims: &mut RestorePeople, snapshots: impl IntoIterator<Item = &'a SavedSim>) -> Vec<(Entity, SavedRel)> {
+    restore_people_at(commands, minutes, true, world, None, sims, snapshots, false)
+}
+
+fn restore_people_at<'a>(commands: &mut Commands, minutes: f64, deck: bool, world: &CurrentWorld,
+    building: Option<&crate::building::ActiveBuilding>, sims: &mut RestorePeople,
+    snapshots: impl IntoIterator<Item = &'a SavedSim>, placement: bool) -> Vec<(Entity, SavedRel)> {
     let by_id: HashMap<u64, Entity> = sims.iter().map(|q| (q.1.id, q.0)).collect();
     let mut unmet: Vec<(Entity, SavedRel)> = Vec::new();
     for s in snapshots {
         let Some(&e) = by_id.get(&s.id) else { continue };
-        let Ok((_, _, mut tf, mut floor, mut motives, mut skills, mut moodlets, mut rels)) = sims.get_mut(e) else { continue };
-        tf.translation = match building {
-            Some(b) if !deck && s.floor <= 1 => crate::building::onto_deck(b, &world.data.heightmap, Vec3::from(s.position)),
-            _ => Vec3::from(s.position),
-        };
-        tf.rotation = Quat::from_rotation_y(s.yaw);
-        floor.0 = s.floor.max(1);
+        let Ok((_, mut sim, mut tf, mut floor, mut motives, mut skills, mut moodlets, mut rels)) = sims.get_mut(e) else { continue };
+        let mut rebuild = placement;
+        if !placement {
+            let personal = SaveGame::sim(s);
+            // Saving normalizes color spaces. Compare the visible values rather
+            // than Color's enum variant, avoiding an identical body rebuild.
+            let color_diff = |a: Color, b: Color| {
+                let (a, b) = (a.to_srgba(), b.to_srgba());
+                (a.red-b.red).abs() > 0.00001 || (a.green-b.green).abs() > 0.00001
+                    || (a.blue-b.blue).abs() > 0.00001 || (a.alpha-b.alpha).abs() > 0.00001
+            };
+            let brow_diff = match (sim.brow_hair, personal.brow_hair) {
+                (Some(a), Some(b)) => color_diff(a,b), (None,None) => false, _ => true,
+            };
+            rebuild = sim.look != personal.look || sim.age != personal.age || sim.outfit != personal.outfit
+                || sim.weight != personal.weight || sim.fitness != personal.fitness || sim.face != personal.face
+                || sim.face_presets != personal.face_presets || sim.occult != personal.occult || sim.female != personal.female
+                || color_diff(sim.skin,personal.skin) || color_diff(sim.hair,personal.hair) || brow_diff
+                || color_diff(sim.eyes,personal.eyes) || color_diff(sim.top,personal.top) || color_diff(sim.bottom,personal.bottom) || s.wearing.is_some();
+            *sim = personal;
+        }
+        if placement {
+            tf.translation = match building {
+                Some(b) if !deck && s.floor <= 1 => crate::building::onto_deck(b, &world.data.heightmap, Vec3::from(s.position)),
+                _ => Vec3::from(s.position),
+            };
+            tf.rotation = Quat::from_rotation_y(s.yaw);
+            floor.0 = s.floor.max(1);
+        }
         motives.0 = s.motives;
         // (And the packs' skills: Alchemy, Bot Building, Arcade Machine...)
-            skills.0 = s.skills.iter().filter_map(|(k, v)| SKILLS.iter().find(|x| *x == k).copied().or_else(|| crate::interact::known_skill(k).then(|| crate::pets::intern(k.clone()))).map(|x| (x, *v))).collect();
+        skills.0 = s.skills.iter().filter_map(|(k, v)| SKILLS.iter().find(|x| *x == k).copied().or_else(|| crate::interact::known_skill(k).then(|| crate::pets::intern(k.clone()))).map(|x| (x, *v))).collect();
         moodlets.0.clear();
         for (name, until) in &s.moodlets {
             if let Some(k) = MoodletKind::from_name(name) {
@@ -1430,11 +1465,12 @@ pub(crate) fn restore_people<'a>(commands: &mut Commands, minutes: f64, deck: bo
             }
         }
         let mut ec = commands.entity(e);
+        ec.insert(crate::residents::PersonalStateReady);
         if let Some((days, elder_span)) = s.aging {
             ec.insert(crate::aging::Aging { days, elder_span, elder_risk: s.elder_risk });
         }
-        restore_school(&mut ec, s);
-        restore_clothing(&mut ec, s);
+        restore_school(&mut ec, s, placement);
+        if rebuild { restore_clothing(&mut ec, s); } else if s.outfit_chosen { ec.insert(crate::simbody::ChangedInto); }
         ec.insert(s.body_temperature);
         if let Some(a) = &s.author {
             ec.insert(a.clone());
@@ -1528,6 +1564,7 @@ pub(crate) fn restore_people<'a>(commands: &mut Commands, minutes: f64, deck: bo
             wishes.dream_state = s.dream_state.clone();
             ec.insert(wishes);
         }
+        if !placement { continue; }
         if s.member {
             ec.insert(HouseholdMember).remove::<(Visitor, OffLot)>();
         } else if s.whereabouts == "visiting" {
@@ -1839,7 +1876,7 @@ mod tests {
         let e = world.spawn_empty().id();
         let apply = |world: &mut World, saved: &SavedSim| {
             let mut queue = bevy::ecs::world::CommandQueue::default();
-            restore_school(&mut Commands::new(&mut queue, world).entity(e), saved);
+            restore_school(&mut Commands::new(&mut queue, world).entity(e), saved, true);
             queue.apply(world);
         };
         apply(&mut world, &saved);

@@ -21,7 +21,7 @@ pub struct HomesPlugin;
 impl Plugin for HomesPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<FamilyHomes>()
-            .add_systems(Update, (residents_home, ring_the_bell, asked_to_leave, residents_away, family_homes).chain().run_if(in_state(PlayMode::Live)));
+            .add_systems(Update, (residents_home, ring_the_bell, asked_to_leave, residents_away, family_homes).chain().in_set(crate::clock::SimPhase::Gameplay).run_if(in_state(PlayMode::Live)));
         if std::env::var("HOME_VISIT").is_ok() {
             app.add_systems(Update, home_visit_test.run_if(in_state(PlayMode::Live)));
         }
@@ -101,6 +101,20 @@ pub fn home_now(p: &s3formats::premade::PremadeSim, clock: &GameClock) -> bool {
     }
 }
 
+/// Availability follows the canonical stage and employment, including residents
+/// who have grown up or changed jobs without ever owning a scene actor.
+fn home_now_in_town(p: &s3formats::premade::PremadeSim, clock: &GameClock, story: &crate::story::TownStory) -> bool {
+    let Some(model) = story.model(&p.id) else { return home_now(p, clock) };
+    if !model.present() { return false; }
+    if !clock.is_workday() { return true; }
+    let age = model.age.as_deref().map_or_else(|| crate::premade::age_of(p.age), crate::save::age_from_name);
+    match age {
+        Age::Child | Age::Teen => !(8.0..15.0).contains(&clock.hour_f()),
+        Age::YoungAdult | Age::Adult if model.job.is_some() => !(9.0..17.0).contains(&clock.hour_f()),
+        _ => true,
+    }
+}
+
 /// The town's relationship state as one of ours: the status, and whether romantic.
 fn status_of(state: &str) -> (RelStatus, bool) {
     match state {
@@ -131,6 +145,7 @@ fn residents_home(
     ),
     mut sims: Query<(Entity, &Sim, &mut Transform, &mut crate::nav::Floor, &mut Relationships, Has<HouseholdMember>)>,
     restored_residents: Query<&Resident>,
+    occupied: Query<(Option<&OnLot>, Has<Visitor>, Has<crate::interact::Invited>, Has<crate::visit::Trip>, Has<crate::interact::AtWork>, Has<crate::rabbitholes::AtRabbitHole>, Has<crate::nav::PathFollow>)>,
     mut notes: ResMut<Notifications>,
     mut done: Local<std::collections::HashSet<usize>>,
     building: Option<Res<crate::building::ActiveBuilding>>,
@@ -149,7 +164,7 @@ fn residents_home(
             continue;
         }
         let Some(family) = family_at(&world, town.as_deref(), &story, &dormant, household.as_ref().map(|h| h.lot_index), v.lot) else { continue };
-        let home: Vec<&s3formats::premade::PremadeSim> = family.members.iter().filter(|p| home_now(p, &clock)).collect();
+        let home: Vec<&s3formats::premade::PremadeSim> = family.members.iter().filter(|p| home_now_in_town(p, &clock, &story)).collect();
         name_home(v.lot, &family.name);
         let name = crate::visit::place_name(&world.data, v.lot);
         if home.is_empty() {
@@ -175,6 +190,11 @@ fn residents_home(
             let e = match existing {
                 Some((_, true)) => continue,
                 Some((e, false)) => {
+                    // Opening another home never cancels an actor's existing visit,
+                    // work or journey, or a restored resident's current route.
+                    if restored_residents.get(e).is_ok_and(|r| r.0 == v.lot) { continue; }
+                    if occupied.get(e).is_ok_and(|(on, visitor, invited, trip, work, rabbit, path)|
+                        on.is_some_and(|on| on.0 != v.lot) || visitor || invited || trip || work || rabbit || path) { continue; }
                     if !restored_residents.get(e).is_ok_and(|r| r.0 == v.lot)
                         && let Ok((_, _, mut tf, mut floor, ..)) = sims.get_mut(e) {
                         tf.translation = pos;
@@ -184,7 +204,8 @@ fn residents_home(
                     e
                 }
                 None => {
-                    let sim = crate::premade::to_sim(p);
+                    let sim = crate::residents::projected_state(&story, &p.id, clock.minutes)
+                        .map_or_else(|| crate::premade::to_sim(p), |s| crate::save::SaveGame::sim(&s));
                     let model = cas.as_ref().and_then(|cas| {
                         let outfit = crate::simbody::pick_outfit(cas, &sim, &mut <rand::rngs::StdRng as rand::SeedableRng>::seed_from_u64(sim.look));
                         crate::simbody::build_sim_model(&data.0, cas, &sim, &outfit, crate::simbody::tone_of(&sim))
@@ -363,7 +384,7 @@ fn home_visit_test(
         let best = (0..world.data.lots.len())
             .filter_map(|i| {
                 let f = family_at(&world, town.as_deref(), &story, &dormant, active, i)?;
-                f.members.iter().any(|p| home_now(p, &clock) && !crate::premade::age_of(p.age).is_little()).then_some((i, f.name.clone()))
+                f.members.iter().any(|p| home_now_in_town(p, &clock, &story) && !crate::premade::age_of(p.age).is_little()).then_some((i, f.name.clone()))
             })
             .min_by(|a, b| {
                 let d = |i: usize| crate::home::lot_center(&world.data.lots[i]).distance(tf.translation);
