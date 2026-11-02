@@ -70,6 +70,8 @@ pub struct SavedSim {
     #[serde(default,skip_serializing_if="std::ops::Not::not")]
     pub coarse_actor:bool,
     #[serde(default,skip_serializing_if="Option::is_none")]
+    pub coarse_needs:Option<crate::coarse_needs::NeedClock>,
+    #[serde(default,skip_serializing_if="Option::is_none")]
     pub meeting:Option<crate::meetups::SavedMeeting>,
     #[serde(default,skip_serializing_if="Option::is_none")]
     pub outing_departure:Option<u64>,
@@ -701,6 +703,7 @@ pub(crate) fn saved_look(sim: &Sim) -> SavedSim {
         invited_at: None,
         visitor_until:None,
         coarse_actor:false,
+        coarse_needs:None,
         meeting:None,
         outing_departure:None,
         world_location: None,
@@ -1069,6 +1072,8 @@ pub(crate) struct CaptureResidents<'w,'s> {
     invitations: Query<'w,'s,&'static Invited>,
     visitors: Query<'w,'s,&'static Visitor>,
     coarse: Query<'w,'s,(),With<crate::city_mobility::CoarseActor>>,
+    need_clocks: Query<'w,'s,&'static crate::coarse_needs::NeedClock>,
+    clock: Res<'w,GameClock>,
     meetings: Query<'w,'s,&'static crate::meetups::Meeting>,
     departures: Query<'w,'s,&'static crate::meetups::OutingDeparture>,
     pending: Option<Res<'w,crate::ghosts::PendingRels>>,
@@ -1118,6 +1123,7 @@ impl CaptureResidents<'_,'_> {
                 invited_at: invitations.get(e).ok().map(|i| i.arrive_at),
                 visitor_until:self.visitors.get(e).ok().map(|v|v.leave_at).filter(|t|t.is_finite()),
                 coarse_actor:self.coarse.contains(e),
+                coarse_needs:Some(if self.coarse.contains(e) {self.need_clocks.get(e).copied().unwrap_or(crate::coarse_needs::NeedClock{at:s3sim::tick_at(self.clock.minutes),sleeping:false})} else {crate::coarse_needs::NeedClock{at:s3sim::tick_at(self.clock.minutes),sleeping:false}}),
                 meeting:self.meetings.get(e).ok().and_then(|meeting|meeting.saved(&world.data)),
                 outing_departure:self.departures.get(e).ok().and_then(|departure|world.data.lots.get(departure.0).map(|lot|lot.id)),
                 look: sim.look,
@@ -1632,6 +1638,7 @@ fn restore_people_at<'a>(commands: &mut Commands, minutes: f64, deck: bool, worl
             wishes.dream_state = s.dream_state.clone();
             ec.insert(wishes);
         }
+        if let Some(clock)=s.coarse_needs {ec.insert(clock);}
         if placement {ec.remove::<crate::city_mobility::CoarseActor>();}
         if s.coarse_actor && !s.member {ec.insert(crate::city_mobility::CoarseActor);}
         if placement {ec.remove::<crate::meetups::Meeting>();}

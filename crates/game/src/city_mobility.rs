@@ -16,10 +16,11 @@ pub(crate) struct OriginLot(pub u64);
 /// Reconcile once per game minute, rather than scanning the whole city per tick.
 /// A live detailed actor or dormant played household keeps its existing ownership.
 pub(crate) fn advance(clock:Res<GameClock>,delta:Res<crate::clock::SimDelta>,world:Res<crate::loading::CurrentWorld>,
-    actors:Query<(&crate::sim::Sim,Has<CoarseActor>)>,weather:Res<crate::weather::Weather>,dormant:Res<crate::household::Dormant>,mut story:ResMut<TownStory>,mut workload:ResMut<MobilityWorkload>) {
+    care:Res<crate::coarse_needs::CareLots>,actors:Query<(&crate::sim::Sim,Has<CoarseActor>)>,weather:Res<crate::weather::Weather>,dormant:Res<crate::household::Dormant>,mut story:ResMut<TownStory>,mut workload:ResMut<MobilityWorkload>) {
     if delta.0<=0.0 {return;}
     let now=s3sim::tick_at(clock.minutes);
-    if workload.last_reconcile.is_none_or(|previous|now<previous || now/10!=previous/10) {
+    let periodic=workload.last_reconcile.is_none_or(|previous|now<previous || now/10!=previous/10);
+    if periodic {
         workload.last_reconcile=Some(now);
         let detailed:HashSet<_>=actors.iter().filter(|(_,coarse)|!*coarse).map(|(sim,_)|sim.id).chain(dormant.member_ids()).collect();
         if !workload.locations_ready {
@@ -63,9 +64,24 @@ pub(crate) fn advance(clock:Res<GameClock>,delta:Res<crate::clock::SimDelta>,wor
             }).collect();
         let roster:HashSet<_>=plans.iter().map(|(id,_)|*id).collect();
         story.mobility.retain(|id|roster.contains(&id));
-        for (id,plan) in plans {story.mobility.seed(id,plan,now);}
+        for (id,plan) in plans {
+            if let Some(saved)=story.residents.records.get_mut(&id).and_then(|r|r.state.as_mut()) {
+                saved.coarse_needs.get_or_insert(crate::coarse_needs::NeedClock{at:now,sleeping:false});
+            }
+            story.mobility.seed(id,plan,now);
+        }
     }
-    let work=story.mobility.advance(now,64);workload.processed+=work.processed;workload.overdue=work.overdue;workload.oldest_delay=work.oldest_delay;
+    let TownStory{mobility,residents,..}=&mut *story;
+    let mut account=|id:u64,resident:&s3sim::mobility::Resident,until,exact| {
+        if let Some(saved)=residents.records.get_mut(&id).and_then(|r|r.state.as_mut()) {
+            let lot=match resident.place {s3sim::mobility::Place::At{lot}=>Some(lot),_=>None};
+            crate::coarse_needs::integrate(saved,resident,until,lot.and_then(|l|care.0.get(&l).copied()).unwrap_or_default(),exact);
+        }
+    };
+    let work=mobility.advance_with(now,64,&mut account);
+    // Do not cross an unprocessed historical transition when a budget is exhausted.
+    if periodic {for (&id,resident) in &mobility.residents {account(id,resident,now.min(resident.next),false);}}
+    workload.processed+=work.processed;workload.overdue=work.overdue;workload.oldest_delay=work.oldest_delay;
 }
 pub(crate) fn reset_frame(mut workload:ResMut<MobilityWorkload>) {workload.processed=0;}
 

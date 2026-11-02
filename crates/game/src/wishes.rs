@@ -331,10 +331,13 @@ pub fn has(w: Option<&Wishes>, r: &str) -> bool {
 
 /// Need decay changes from lifetime rewards.
 pub fn reward_decay(w: Option<&Wishes>, motive: usize) -> f32 {
+    reward_decay_with(motive,|reward|has(w,reward))
+}
+pub(crate) fn reward_decay_with(motive:usize,has:impl Fn(&str)->bool)->f32 {
     match motive {
-        BLADDER if has(w, "SteelBladder") => 0.0,
-        HUNGER if has(w, "HardlyHungry") => 0.25,
-        HYGIENE if has(w, "PermaClean") => 0.25,
+        BLADDER if has("SteelBladder") => 0.0,
+        HUNGER if has("HardlyHungry") => 0.25,
+        HYGIENE if has("PermaClean") => 0.25,
         _ => 1.0,
     }
 }

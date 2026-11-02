@@ -53,6 +53,8 @@ the actual career locations and hours; idle detailed NPCs can rejoin a saved jou
 home while retaining logical identity and personal state. Full city simulation tiers
 remain planned. Completed coarse school sessions retain grades and homework; worker
 attendance is applied once from durable completion events.
+Coarse needs keep a saved minute cursor, use shared decay/interaction rates, and
+require available beds, food and plumbing for abstract self-care.
 Remaining gameplay systems, navigation and background residents
 are still being migrated. Performance gains are measured as each subsystem changes.
 

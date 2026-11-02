@@ -107,13 +107,17 @@ impl City {
             Place::Travel{from,to,depart,arrive}=>Some((from,to,((now.saturating_sub(depart)) as f64/(arrive-depart) as f64).clamp(0.0,1.0))),
         }
     }
-    pub fn advance(&mut self,now:Tick,budget:usize)->Work {
+    pub fn advance(&mut self,now:Tick,budget:usize)->Work {self.advance_with(now,budget,|_,_,_,_|{})}
+    /// Account for the old interval before changing place. Consumers keep their
+    /// own durable cursor; overdue events therefore cannot rewrite past needs.
+    pub fn advance_with(&mut self,now:Tick,budget:usize,mut interval:impl FnMut(ResidentId,&Resident,Tick,bool))->Work {
         if self.budget_tick!=Some(now) {self.budget_tick=Some(now);self.spent=0;}
         let mut processed=0;
         while self.spent<budget {
             let Some(&(at,id))=self.due.first() else {break};if at>now {break;}
             self.due.remove(&(at,id));
             let Some(resident)=self.residents.get_mut(&id) else {continue};
+            interval(id,resident,at,true);
             let plan=resident.plan;
             match resident.place {
                 Place::At{lot}=> {
@@ -232,5 +236,17 @@ mod completion_tests {
         assert_eq!(city.pop_completed(),Some(Completed{resident:7,purpose:Purpose::School,started:5400,ended:9000}));
         assert_eq!(city.pop_completed(),None);city.advance(9000,32);assert_eq!(city.pop_completed(),None);
         let mut city:City=serde_json::from_str(&serde_json::to_string(&city).unwrap()).unwrap();assert_eq!(city.pop_completed(),None);
+    }
+}
+
+#[cfg(test)]
+mod interval_tests {
+    use super::*;
+    #[test]
+    fn delayed_intervals_are_reported_before_each_original_transition() {
+        let p=Plan{home:1,destination:2,departure:100,travel:20,stay:30,work:None,school:None};let mut city=City::default();city.seed(1,p,0);
+        let mut spans=Vec::new();city.advance_with(200,8,|id,r,at,_|spans.push((id,r.place,at)));
+        assert_eq!(spans,vec![(1,Place::At{lot:1},100),(1,Place::Travel{from:1,to:2,depart:100,arrive:120},120),(1,Place::At{lot:2},150),(1,Place::Travel{from:2,to:1,depart:150,arrive:170},170)]);
+        assert_eq!(city.advance_with(200,8,|_,_,_,_|panic!("no replay")).processed,0);
     }
 }
