@@ -35,10 +35,15 @@ pub struct Resident {
 }
 #[derive(Clone,Debug,Default,Serialize,Deserialize)]
 pub struct City {
+    #[serde(default)] completed:std::collections::VecDeque<Completed>,
     pub residents:BTreeMap<ResidentId,Resident>,
     due:BTreeSet<(Tick,ResidentId)>,
     budget_tick:Option<Tick>,spent:usize,
 }
+/// A completed commitment remains pending until its personal state owner applies
+/// it. Saving between dispatch and application cannot lose attendance/results.
+#[derive(Clone,Copy,Debug,PartialEq,Eq,Serialize,Deserialize)]
+pub struct Completed {pub resident:ResidentId,pub purpose:Purpose,pub started:Tick,pub ended:Tick}
 #[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
 pub struct Work {pub processed:usize,pub overdue:usize,pub oldest_delay:Tick}
 impl Plan {
@@ -61,6 +66,9 @@ impl Plan {
     }
 }
 impl City {
+    pub fn pop_completed(&mut self)->Option<Completed> {self.completed.pop_front()}
+    pub fn completed_count(&self)->usize {self.completed.len()}
+
     /// Reconcile only cold residents. A detailed actor's state must be captured
     /// before it enters this roster; removing it transfers ownership out of here.
     pub fn retain(&mut self,mut keep:impl FnMut(ResidentId)->bool) {
@@ -111,6 +119,10 @@ impl City {
                 Place::At{lot}=> {
                     let to=if lot==plan.home {resident.activity.map_or(plan.destination,|d|d.destination)} else {plan.home};
                     let travel=resident.activity.map_or(plan.travel,|d|d.travel);
+                    if lot!=plan.home && let (Some(activity),Some(ended))=(resident.activity,resident.release) {
+                        let duration=if activity.end>activity.start {activity.end-activity.start} else {DAY-activity.start+activity.end};
+                        self.completed.push_back(Completed{resident:id,purpose:activity.purpose,started:ended.saturating_sub(duration),ended});
+                    }
                     resident.place=Place::Travel{from:lot,to,depart:at,arrive:at.saturating_add(travel)};
                     resident.next=at.saturating_add(travel);
                 }
@@ -205,5 +217,20 @@ mod return_tests {
         city.rejoin(7,plan,12000,2,175);assert_eq!(city.residents[&7].next,12175);
         let mut city:City=serde_json::from_str(&serde_json::to_string(&city).unwrap()).unwrap();assert_eq!(city.advance(12174,10).processed,0);
         city.advance(12175,10);assert_eq!(city.residents[&7].place,Place::At{lot:1});assert_eq!(city.residents[&7].next,DAY+10200);
+    }
+}
+
+#[cfg(test)]
+mod completion_tests {
+    use super::*;
+    #[test]
+    fn completion_survives_dispatch_save_and_is_consumed_exactly_once() {
+        let activity=Commitment{purpose:Purpose::School,destination:3,days:31,start:5400,end:9000,travel:250,cancelled_day:None};
+        let plan=Plan{home:1,destination:2,departure:10200,travel:200,stay:1200,work:None,school:Some(activity)};
+        let mut city=City::default();city.seed(7,plan,0);city.advance(9000,32);assert_eq!(city.completed_count(),1);
+        let mut city:City=serde_json::from_str(&serde_json::to_string(&city).unwrap()).unwrap();
+        assert_eq!(city.pop_completed(),Some(Completed{resident:7,purpose:Purpose::School,started:5400,ended:9000}));
+        assert_eq!(city.pop_completed(),None);city.advance(9000,32);assert_eq!(city.pop_completed(),None);
+        let mut city:City=serde_json::from_str(&serde_json::to_string(&city).unwrap()).unwrap();assert_eq!(city.pop_completed(),None);
     }
 }

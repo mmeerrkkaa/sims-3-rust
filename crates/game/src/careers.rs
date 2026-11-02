@@ -984,7 +984,7 @@ pub fn work_schedule(
             &mut crate::social::Relationships,
             Has<crate::interact::OffLot>,
         ),
-        Without<crate::rabbitholes::AtRabbitHole>,
+        (Without<crate::rabbitholes::AtRabbitHole>,Without<crate::city_mobility::CoarseActor>),
     >,
     mut session_start: Local<Option<f64>>,
     mut questions: ResMut<crate::dialog::Questions>,

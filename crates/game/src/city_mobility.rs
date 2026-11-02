@@ -145,3 +145,31 @@ pub(crate) fn park(mut commands:Commands,time:Res<Time<Real>>,clock:Res<GameCloc
         workload.idle_since.remove(&entity);workload.last_reconcile=None;workload.parked+=1;
     }
 }
+
+/// Apply bounded, durable attendance events to the checkpoint before mirroring it
+/// to any retained logical root. This never pays the currently played family.
+pub(crate) fn complete(mut commands:Commands,mut story:ResMut<TownStory>,mut actors:Query<(Entity,&crate::sim::Sim,Option<&mut crate::careers::Job>,Option<&mut crate::rabbitholes::SchoolGrades>)>) {
+    for _ in 0..64 {
+        let Some(event)=story.mobility.pop_completed() else {break};
+        let Some(state)=story.residents.records.get_mut(&event.resident).and_then(|record|record.state.as_mut()) else {continue};
+        match event.purpose {
+            s3sim::mobility::Purpose::Work=> {
+                let day=(event.started/s3sim::mobility::DAY) as u32;
+                if let Some(job)=&mut state.job {job.last_day=Some(job.last_day.map_or(day,|old|old.max(day)));}
+                for (_,sim,job,_) in &mut actors {if sim.id==event.resident && let (Some(mut job),Some(saved))=(job,state.job.as_ref()) {job.last_day=saved.last_day;}}
+            }
+            s3sim::mobility::Purpose::School=> {
+                let healthy=state.motives.iter().all(|m|*m> -40.0);
+                // A finished historical session may be applied after a detailed
+                // handoff; preserve newer live grades instead of replaying an old checkpoint.
+                let current=actors.iter().find(|(_,sim,_,_)|sim.id==event.resident).and_then(|(_,_,_,grade)|grade.map(|g|g.0));
+                let grade=(current.or(state.school_grade).unwrap_or(55.0)+if healthy {8.0}else{-12.0}).clamp(0.0,100.0);
+                state.school_grade=Some(grade);state.homework=true;state.homework_progress=0.0;
+                for (entity,sim,_,grades) in &mut actors {if sim.id==event.resident {
+                    if let Some(mut grades)=grades {grades.0=grade;} else {commands.entity(entity).insert(crate::rabbitholes::SchoolGrades(grade));}
+                    commands.entity(entity).insert(crate::rabbitholes::Homework::default());
+                }}
+            }
+        }
+    }
+}
