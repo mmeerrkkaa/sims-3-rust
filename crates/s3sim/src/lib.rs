@@ -1,5 +1,6 @@
 //! Persistent, deterministic scheduling independent of Bevy entities and rendering.
 pub mod residents;
+pub mod mobility;
 pub mod time;
 use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};

@@ -46,7 +46,10 @@ personal state remain alive while Entity-based gameplay is being migrated.
 Accepted outings retain the promised departure and meeting countdown across saves.
 Active dates and parties retain their participants, deadlines and accumulated results
 across saves.
-Full live simulation tiers remain planned.
+Cold residents have an initial coarse leisure itinerary between home and community lots.
+Departures, travel deadlines and returns are persistent and processed with a tick budget;
+detailed activation takes over the existing journey. Work/school itineraries and full
+city simulation tiers remain planned.
 Remaining gameplay systems, navigation and background residents
 are still being migrated. Performance gains are measured as each subsystem changes.
 

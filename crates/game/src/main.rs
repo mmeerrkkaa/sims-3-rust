@@ -148,6 +148,7 @@ mod save;
 mod residents;
 mod resident_bodies;
 mod social_state;
+mod city_mobility;
 mod sim;
 mod simpanel;
 mod sound;

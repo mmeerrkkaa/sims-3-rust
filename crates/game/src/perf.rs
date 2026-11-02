@@ -44,7 +44,7 @@ impl Plugin for PerfPlugin {
         let path = Path::new(&path);
         let writer = csv_file(
             path,
-            "elapsed_s,state,mode,speed,sims,objects,frames,window_s,fps,frame_mean_ms,frame_p95_ms,frame_max_ms,update_mean_ms,game_minutes_per_real_s,focused,width,height,present_mode,stress_sims,stress_with_queue,stress_walking,topic_dispatch_last_frame,topic_pending,topic_oldest_delay_ticks,sim_steps_last_frame,sim_debt_real_s,sim_debt_game_min,sim_ticks_total,resident_records,resident_checkpoints,resident_bodies,resident_unloaded_bodies,resident_body_evictions,resident_body_wakes",
+            "elapsed_s,state,mode,speed,sims,objects,frames,window_s,fps,frame_mean_ms,frame_p95_ms,frame_max_ms,update_mean_ms,game_minutes_per_real_s,focused,width,height,present_mode,stress_sims,stress_with_queue,stress_walking,topic_dispatch_last_frame,topic_pending,topic_oldest_delay_ticks,sim_steps_last_frame,sim_debt_real_s,sim_debt_game_min,sim_ticks_total,resident_records,resident_checkpoints,resident_bodies,resident_unloaded_bodies,resident_body_evictions,resident_body_wakes,coarse_residents,coarse_traveling,coarse_events,coarse_overdue,coarse_oldest_delay",
         );
         let writer = match writer {
             Ok(writer) => writer,
@@ -133,6 +133,7 @@ fn finish_update(
     topics: Res<crate::topics::TopicWorkload>,
     ticks: Res<crate::clock::TickWorkload>,
     story: Res<crate::story::TownStory>,
+    mobility:Res<crate::city_mobility::MobilityWorkload>,
     (bodies,unloaded,cache):(Query<(),(With<crate::sim::Sim>,With<crate::simbody::Skeleton>)>,Query<(),With<crate::resident_bodies::UnloadedBody>>,Res<crate::resident_bodies::BodyCache>),
 ) {
     let update_ms = recording.update_start.elapsed().as_secs_f64() * 1000.0;
@@ -180,7 +181,7 @@ fn finish_update(
     let result = (|| -> std::io::Result<()> {
         writeln!(
             writer,
-            "{:.3},{:?},{:?},{},{},{},{},{:.6},{:.3},{:.3},{:.3},{:.3},{:.3},{:.6},{},{},{},{:?},{},{},{},{},{},{},{},{:.6},{:.6},{},{},{},{},{},{},{}",
+            "{:.3},{:?},{:?},{},{},{},{},{:.6},{:.3},{:.3},{:.3},{:.3},{:.3},{:.6},{},{},{},{:?},{},{},{},{},{},{},{},{:.6},{:.6},{},{},{},{},{},{},{},{},{},{},{},{}",
             start.duration_since(r.origin).as_secs_f64(),
             key.0,
             key.1,
@@ -205,7 +206,8 @@ fn finish_update(
             topics.batch, topics.pending, topics.oldest_delay,
             ticks.steps, ticks.pending_seconds, ticks.pending_minutes, clock.timeline.ticks,
             story.residents.records.len(), story.residents.records.values().filter(|r| r.checkpoint_at.is_some()).count(),
-            bodies.iter().count(),unloaded.iter().count(),cache.evicted,cache.woken
+            bodies.iter().count(),unloaded.iter().count(),cache.evicted,cache.woken,
+            story.mobility.residents.len(),story.mobility.residents.values().filter(|r|matches!(r.place,s3sim::mobility::Place::Travel{..})).count(),mobility.processed,mobility.overdue,mobility.oldest_delay
         )?;
         writer.flush()
     })();

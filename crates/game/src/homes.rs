@@ -106,6 +106,9 @@ pub fn home_now(p: &s3formats::premade::PremadeSim, clock: &GameClock) -> bool {
 fn home_now_in_town(p: &s3formats::premade::PremadeSim, clock: &GameClock, story: &crate::story::TownStory) -> bool {
     let Some(model) = story.model(&p.id) else { return home_now(p, clock) };
     if !model.present() { return false; }
+    if let Some(resident)=story.mobility.residents.get(&p.id) {
+        if resident.place!=(s3sim::mobility::Place::At{lot:resident.plan.home}) {return false;}
+    }
     if !clock.is_workday() { return true; }
     let age = model.age.as_deref().map_or_else(|| crate::premade::age_of(p.age), crate::save::age_from_name);
     match age {

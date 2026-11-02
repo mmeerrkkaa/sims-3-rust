@@ -6182,7 +6182,7 @@ pub(crate) fn run_actions(
                             if elapsed >= 8.0 {
                                 finished = true;
                                 let tname = who.get(target).map(|w| w.0.first.clone()).unwrap_or_default();
-                                commands.entity(*target).try_insert(Invited { arrive_at: clock.minutes + 45.0 });
+                                commands.entity(*target).remove::<(crate::visit::Trip,crate::rabbitholes::AtRabbitHole)>().try_insert(Invited { arrive_at: clock.minutes + 45.0 });
                                 notes.push(format!("{} invited {} over. They'll be here soon.", sim.first, tname));
                                 // (The game's `kInvitedSimOver`.)
                                 let invited = *target;
