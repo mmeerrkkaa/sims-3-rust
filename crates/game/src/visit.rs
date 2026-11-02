@@ -184,7 +184,7 @@ pub fn place_name(world: &WorldInfo, lot: usize) -> String {
 /// Sets off for a community lot (when the Sim reaches the way out).
 pub fn drive_to(commands: &mut Commands, clock: &GameClock, e: Entity, sim: &Sim, lot: usize, place: String, notes: &mut Notifications) {
     notes.push(format!("{} headed to {place}.", sim.first));
-    commands.entity(e).remove::<OnLot>().insert((
+    commands.entity(e).remove::<(OnLot,crate::meetups::OutingDeparture)>().insert((
         AtRabbitHole { lot, activity: &DRIVE, inside_from: clock.minutes + DRIVE_MINUTES, until: f64::MAX, place },
         Trip(lot),
         Visibility::Hidden,

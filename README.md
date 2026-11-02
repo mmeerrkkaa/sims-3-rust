@@ -43,6 +43,7 @@ can remain without models after loading.
 Remote contacts start without a 3D body. Idle off-lot bodies have a bounded cache
 and reload for visible activity or portraits. Logical entities and
 personal state remain alive while Entity-based gameplay is being migrated.
+Accepted outings retain the promised departure and meeting countdown across saves.
 Full live simulation tiers remain planned.
 Remaining gameplay systems, navigation and background residents
 are still being migrated. Performance gains are measured as each subsystem changes.

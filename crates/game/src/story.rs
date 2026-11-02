@@ -39,7 +39,9 @@ impl Plugin for StoryPlugin {
             .add_systems(crate::clock::SimTick, (merge_created, crate::residents::seed_residents, crate::life::capture_subscriber::<crate::life::LifeEvent, 6>, crate::residents::model_events, progress, crate::residents::reconcile_daily, read_the_news).chain().in_set(crate::aging::LifecyclePhase::Town))
             .add_systems(crate::clock::SimTick, (crate::life::capture_subscriber::<crate::life::LifeEvent, 6>, crate::residents::model_events).chain().in_set(crate::wishes::AspirationPhase::Initialize));
         #[cfg(local_validation)]
-        app.init_resource::<crate::npc_ownership_test::BodyCacheProbe>()
+        app.init_resource::<crate::npc_ownership_test::DurableMeetingProbe>()
+            .add_systems(Update,crate::npc_ownership_test::durable_meeting_frame.in_set(crate::clock::SimPhase::Gameplay).run_if(in_state(PlayMode::Live).and_then(||std::env::var_os("DURABLE_MEETING_TEST").is_some())))
+            .init_resource::<crate::npc_ownership_test::BodyCacheProbe>()
             .add_systems(Update, crate::npc_ownership_test::body_cache_frame.in_set(crate::clock::SimPhase::Gameplay).run_if(in_state(PlayMode::Live).and_then(||std::env::var_os("BODY_CACHE_TEST").is_some() || std::env::var_os("BODY_CACHE_RELOAD").is_some())))
             .init_resource::<crate::npc_ownership_test::ResidentRequestProbe>()
             .add_systems(Update, crate::npc_ownership_test::resident_request_frame.in_set(crate::clock::SimPhase::Gameplay).run_if(in_state(PlayMode::Live).and_then(||std::env::var_os("RESIDENT_REQUEST_TEST").is_some() || std::env::var_os("RESIDENT_REQUEST_RELOAD").is_some())))

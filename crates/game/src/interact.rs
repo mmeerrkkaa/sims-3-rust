@@ -3629,6 +3629,9 @@ pub(crate) fn run_actions(
             continue;
         }
         if action.cancel {
+            // Clear the durable departure in the same tick that consumes the
+            // cancelled action, before the next frame can reconstruct its queue.
+            if matches!(action.kind,ActionKind::GoToLot{..}) {commands.entity(me).remove::<crate::meetups::OutingDeparture>();}
             if let ActionKind::Outro { stand_at, .. } = action.kind {
                 stand_up_at = stand_at;
             }
@@ -6160,7 +6163,8 @@ pub(crate) fn run_actions(
                                 let (t, l, d) = (*target, *lot, *date);
                                 let tname = who.get(&t).map(|w| w.0.first.clone()).unwrap_or_default();
                                 let place = crate::visit::place_name(&world.data, l);
-                                commands.entity(t).insert(crate::meetups::Meeting::new(me, l, d, clock.minutes));
+                                commands.entity(t).insert(crate::meetups::Meeting::new(sim.id, l, d, clock.minutes));
+                                commands.entity(me).insert(crate::meetups::OutingDeparture(l));
                                 notes.push(if d {
                                     format!("{tname} will meet {} at {place} for a date.", sim.first)
                                 } else {

@@ -65,6 +65,10 @@ pub struct SavedSim {
     pub whereabouts: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invited_at: Option<f64>,
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    pub meeting:Option<crate::meetups::SavedMeeting>,
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    pub outing_departure:Option<u64>,
     /// Persistent open-world location; absent in saves predating multi-lot simulation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub world_location: Option<s3sim::residents::WorldLocation>,
@@ -689,6 +693,8 @@ pub(crate) fn saved_look(sim: &Sim) -> SavedSim {
         selected: false,
         whereabouts: "away".into(),
         invited_at: None,
+        meeting:None,
+        outing_departure:None,
         world_location: None,
         lot_role: None,
         background: None,
@@ -826,7 +832,7 @@ impl SaveGame {
     /// Sims the household knows (visitors and friends living elsewhere).
     pub fn known_sims(&self) -> Vec<Sim> {
         self.sims.iter().filter(|s| !s.member && s.background.is_none())
-            .filter(|s|s.whereabouts=="visiting" || s.world_location.is_some() || s.lot_role.is_some() || s.invited_at.is_some())
+            .filter(|s|s.whereabouts=="visiting" || s.world_location.is_some() || s.lot_role.is_some() || s.invited_at.is_some() || s.meeting.is_some() || s.outing_departure.is_some())
             .filter_map(|s| self.town.apply(Self::sim(s))).collect()
     }
 
@@ -1053,6 +1059,8 @@ pub(crate) struct CaptureResidents<'w,'s> {
     people: CapturePeople<'w,'s>,
     identities: Query<'w,'s,(Entity,&'static Sim),Without<crate::services::ServiceNpc>>,
     invitations: Query<'w,'s,&'static Invited>,
+    meetings: Query<'w,'s,&'static crate::meetups::Meeting>,
+    departures: Query<'w,'s,&'static crate::meetups::OutingDeparture>,
     pending: Option<Res<'w,crate::ghosts::PendingRels>>,
     world: Res<'w,CurrentWorld>,
     ui: Option<Res<'w,crate::icons::GameUi>>,
@@ -1098,6 +1106,8 @@ impl CaptureResidents<'_,'_> {
             saved.push(SavedSim {
                 id: sim.id,
                 invited_at: invitations.get(e).ok().map(|i| i.arrive_at),
+                meeting:self.meetings.get(e).ok().and_then(|meeting|meeting.saved(&world.data)),
+                outing_departure:self.departures.get(e).ok().and_then(|departure|world.data.lots.get(departure.0).map(|lot|lot.id)),
                 look: sim.look,
                 first: sim.first.clone(),
                 last: sim.last.clone(),
@@ -1607,6 +1617,19 @@ fn restore_people_at<'a>(commands: &mut Commands, minutes: f64, deck: bool, worl
             wishes.next_offer = s.next_wish_offer.unwrap_or(minutes);
             wishes.dream_state = s.dream_state.clone();
             ec.insert(wishes);
+        }
+        if placement {ec.remove::<crate::meetups::Meeting>();}
+        if let Some(saved)=&s.meeting {
+            if let Some(meeting)=crate::meetups::Meeting::restore(saved,&world.data) {
+                if placement {ec.insert(meeting);} else {ec.insert_if_new(meeting);}
+            }
+            else {warn!("cannot restore {} meeting on missing lot {}",s.first,saved.lot);}
+        }
+        if placement {ec.remove::<crate::meetups::OutingDeparture>();}
+        if let Some(destination)=s.outing_departure {
+            if let Some(lot)=world.data.lots.iter().position(|lot|lot.id==destination) {
+                ec.insert_if_new(crate::meetups::OutingDeparture(lot));
+            } else {warn!("cannot restore {} outing departure on missing lot {}",s.first,destination);}
         }
         if !placement { continue; }
         if s.member {

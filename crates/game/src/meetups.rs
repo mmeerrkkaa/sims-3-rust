@@ -18,7 +18,8 @@ pub struct MeetupsPlugin;
 
 impl Plugin for MeetupsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, turn_up.run_if(in_state(PlayMode::Live)));
+        app.add_systems(Update, resume_departures.run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Prepare).after(crate::residents::reconcile_daily))
+            .add_systems(crate::clock::SimTick,turn_up.in_set(crate::careers::CommitmentPhase::Trips));
     }
 }
 
@@ -35,7 +36,7 @@ pub const CALL_MINUTES: f32 = 8.0;
 /// Asked to meet someone at a lot: who, where, whether it's a date, and since when.
 #[derive(Component)]
 pub struct Meeting {
-    pub with: Entity,
+    pub with: u64,
     pub lot: usize,
     pub date: bool,
     pub since: f64,
@@ -43,8 +44,42 @@ pub struct Meeting {
 }
 
 impl Meeting {
-    pub fn new(with: Entity, lot: usize, date: bool, now: f64) -> Self {
+    pub fn new(with: u64, lot: usize, date: bool, now: f64) -> Self {
         Self { with, lot, date, since: now, caller_there: None }
+    }
+}
+
+/// A promise to meet uses durable world/resident identity, never scene handles.
+#[derive(serde::Serialize,serde::Deserialize,Clone,Debug,PartialEq)]
+pub struct SavedMeeting {
+    pub with:u64,
+    pub lot:u64,
+    pub date:bool,
+    pub since:f64,
+    pub caller_there:Option<f64>,
+}
+impl Meeting {
+    pub(crate) fn saved(&self,world:&crate::loading::WorldInfo)->Option<SavedMeeting> {
+        Some(SavedMeeting{with:self.with,lot:world.lots.get(self.lot)?.id,date:self.date,since:self.since,caller_there:self.caller_there})
+    }
+    pub(crate) fn restore(saved:&SavedMeeting,world:&crate::loading::WorldInfo)->Option<Self> {
+        Some(Self{with:saved.with,lot:world.lots.iter().position(|l|l.id==saved.lot)?,date:saved.date,since:saved.since,caller_there:saved.caller_there})
+    }
+}
+
+/// Accepted outing awaiting the caller's departure. This promise survives a save
+/// between finishing the phone call and the travel action starting.
+#[derive(Component)]
+pub(crate) struct OutingDeparture(pub usize);
+fn resume_departures(mut commands:Commands,mut callers:Query<(Entity,&OutingDeparture,&mut ActionQueue,Option<&crate::visit::Trip>,Option<&crate::visit::OnLot>)>) {
+    for (entity,departure,mut queue,trip,on) in &mut callers {
+        if trip.is_some() || on.is_some_and(|lot|lot.0==departure.0) {commands.entity(entity).remove::<OutingDeparture>();continue;}
+        if queue.0.iter().any(|action|action.cancel && matches!(action.kind,ActionKind::GoToLot{lot} if lot==departure.0)) {
+            commands.entity(entity).remove::<OutingDeparture>();continue;
+        }
+        if !queue.0.iter().any(|action|matches!(action.kind,ActionKind::GoToLot{lot} if lot==departure.0)) {
+            queue.0.push_back(Action::new("Visit Lot",ActionKind::GoToLot{lot:departure.0},false));
+        }
     }
 }
 
@@ -74,14 +109,22 @@ fn turn_up(
     visited: Res<crate::visit::OpenLots>,
     mut asked: Query<(Entity, &Sim, &mut Meeting, &mut Transform, Option<&mut crate::nav::Floor>)>,
     callers: Query<(&Sim, Option<&crate::visit::OnLot>), Without<Meeting>>,
+    (actors,story,mut requests):(Res<crate::residents::ResidentActors>,Res<crate::story::TownStory>,ResMut<crate::residents::MaterializeRequests>),
     mut starts: MessageWriter<crate::dates::StartDate>,
     mut notes: ResMut<Notifications>,
 ) {
     let now = clock.minutes;
     let mut rng = rand::rng();
     for (e, sim, mut m, mut tf, floor) in &mut asked {
-        let Ok((caller, on)) = callers.get(m.with) else {
-            commands.entity(e).remove::<Meeting>();
+        // A caller without a scene entity still owns the promise. Do not
+        // cancel a loaded meeting merely because its caller materializes later.
+        if !story.model(&m.with).is_none_or(|model|model.present()) {
+            commands.entity(e).remove::<Meeting>();continue;
+        }
+        let caller=actors.by_id.get(&m.with).and_then(|entity|callers.get(*entity).ok().map(|row|(*entity,row)));
+        let Some((caller_entity,(caller,on)))=caller else {
+            if now-m.since>GIVE_UP {commands.entity(e).remove::<Meeting>();}
+            else if story.residents.records.get(&m.with).is_some_and(|r|r.state.is_some()) {requests.request(m.with);}
             continue;
         };
         let here = on.is_some_and(|o| o.0 == m.lot) && visited.0.get(&m.lot).is_some_and(|v| !v.grid.dirty);
@@ -103,7 +146,7 @@ fn turn_up(
                 .remove::<(Meeting, crate::interact::OffLot, crate::interact::Invited, crate::town::Townie, crate::nav::PathFollow)>()
                 .insert((crate::visit::LotGuest { leave_at: now + STAY }, crate::visit::OnLot(m.lot), Visibility::Inherited))
                 .insert_if_new((ActionQueue::default(), crate::interact::AutonomyTimer(2.0), crate::interact::Skills::default()));
-            let with = m.with;
+            let with = caller_entity;
             if m.date {
                 starts.write(crate::dates::StartDate { a: with, b: e });
             } else {
@@ -147,3 +190,9 @@ mod tests {
         assert!(!can_date(&a, &b, &rels, other), "a grown-up and a teen");
     }
 }
+
+#[cfg(local_validation)]
+pub(crate) fn validate_turn_up(world:&mut World) {use bevy::ecs::system::RunSystemOnce;world.run_system_once(turn_up).unwrap();}
+
+#[cfg(local_validation)]
+pub(crate) fn validate_departures(world:&mut World) {use bevy::ecs::system::RunSystemOnce;world.run_system_once(resume_departures).unwrap();}
