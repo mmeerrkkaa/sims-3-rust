@@ -1227,8 +1227,8 @@ fn save_game(
             occult: sim.occult.map(|o| o.name().to_string()),
         });
     }
-    for resident in &saved {
-        story.residents.checkpoint(resident.id, resident.clone(), s3sim::tick_at(clock.minutes));
+    for resident in &mut saved {
+        crate::residents::checkpoint(&mut story, resident, clock.minutes);
         if resident.member && let Some(home) = world.data.lots.get(hh.lot_index) {
             story.residents.records.get_mut(&resident.id).unwrap().home = Some(home.id);
         }
@@ -1593,9 +1593,17 @@ pub(crate) fn apply_loaded_game(
         h.name = game.household.clone();
     }
     let saved_ids: std::collections::HashSet<_> = game.sims.iter().map(|s| s.id).collect();
-    let snapshots = game.sims.iter().chain(game.town.residents.records.iter()
-        .filter(|(id, r)| r.checkpoint_at.is_some() && !r.state.member && !saved_ids.contains(id)).map(|(_, r)| &r.state));
-    let unmet = restore_people(&mut commands, game.minutes, game.deck, &world, building.as_deref(), &mut sims, snapshots);
+    let live_ids: std::collections::HashSet<_> = sims.iter().map(|s| s.1.id).collect();
+    let mut snapshots: Vec<_> = game.sims.iter().map(|s| {
+        let mut snapshot = s.clone();
+        if !s.member && let Some(model) = game.town.model(&s.id) {
+            crate::residents::apply_model(&mut snapshot, model, game.minutes);
+        }
+        snapshot
+    }).collect();
+    snapshots.extend(game.town.residents.records.iter().filter(|(id, record)| record.checkpoint_at.is_some() && live_ids.contains(id) && !saved_ids.contains(id))
+        .filter_map(|(id, _)| crate::residents::projected_state(&game.town, id, game.minutes)).filter(|s| !s.member));
+    let unmet = restore_people(&mut commands, game.minutes, game.deck, &world, building.as_deref(), &mut sims, &snapshots);
     // Furniture: take away what was sold, put back what was bought.
     // (By where it stood on the ground: the starter deck's furniture stands higher than it did
     // in older saves.)
@@ -1625,7 +1633,7 @@ pub(crate) fn apply_loaded_game(
     }
     commands.insert_resource(crate::building::LotPaint(game.paint.clone()));
     commands.insert_resource(crate::gardening::PendingPlants(game.plants.clone(), game.seeds.clone(), game.perfect_produce.clone()));
-    commands.insert_resource(game.town.clone());
+    commands.insert_resource(game.town.clone().canonicalized());
     commands.insert_resource(game.alarm);
     commands.insert_resource(crate::upgrades::PendingUpgrades(game.upgrades.clone(), 0.0));
     let heights = game.heights.clone();

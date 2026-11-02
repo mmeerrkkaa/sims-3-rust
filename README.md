@@ -32,7 +32,10 @@ ordered tick phases, while body rebuilding stays in frame presentation. Town day
 catch-up retains pending days; holiday delivery markers are included in saves.
 City profiles and personal checkpoints are now stored by stable resident ID separately
 from model preparation. Unmet background residents and street walks survive saves;
-loading keeps a small background actor cohort. Full live simulation tiers remain planned.
+loading keeps a small background actor cohort. Daily age, career and couple changes share
+a canonical resident record; old town records migrate on load. Household takeover projects
+that progression into personal state, and contacts bind when ordinary actors arrive.
+Full live simulation tiers remain planned.
 Remaining gameplay systems, navigation and background residents
 are still being migrated. Performance gains are measured as each subsystem changes.
 

@@ -23,11 +23,16 @@ pub struct StoryPlugin;
 
 impl Plugin for StoryPlugin {
     fn build(&self, app: &mut App) {
+        crate::life::buffer_events::<crate::life::LifeEvent, 6>(app);
         app.init_resource::<TownStory>()
-            .add_systems(Update, (prepare_story, merge_created, crate::residents::seed_residents).chain().run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Prepare))
-            .add_systems(crate::clock::SimTick, (merge_created, crate::residents::seed_residents, progress, read_the_news).chain().in_set(crate::aging::LifecyclePhase::Town));
+            .init_resource::<crate::residents::ResidentActors>()
+            .add_systems(Update, (prepare_story, merge_created, crate::residents::seed_residents, crate::residents::bind_contacts, crate::residents::reconcile_daily).chain().run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Prepare))
+            .add_systems(crate::clock::SimTick, (merge_created, crate::residents::seed_residents, crate::life::capture_subscriber::<crate::life::LifeEvent, 6>, crate::residents::model_events, progress, crate::residents::reconcile_daily, read_the_news).chain().in_set(crate::aging::LifecyclePhase::Town))
+            .add_systems(crate::clock::SimTick, (crate::life::capture_subscriber::<crate::life::LifeEvent, 6>, crate::residents::model_events).chain().in_set(crate::wishes::AspirationPhase::Initialize));
         #[cfg(local_validation)]
-        app.init_resource::<crate::npc_ownership_test::ResidentStoreProbe>()
+        app.init_resource::<crate::npc_ownership_test::CanonicalResidentProbe>()
+            .add_systems(Update, crate::npc_ownership_test::canonical_resident_frame.in_set(crate::clock::SimPhase::Gameplay).run_if(in_state(PlayMode::Live).and_then(|| std::env::var_os("CANONICAL_RESIDENT_TEST").is_some() || std::env::var_os("CANONICAL_RESIDENT_RELOAD").is_some())))
+            .init_resource::<crate::npc_ownership_test::ResidentStoreProbe>()
             .add_systems(Update, crate::npc_ownership_test::resident_store_frame.in_set(crate::clock::SimPhase::Gameplay).run_if(in_state(PlayMode::Live).and_then(|| std::env::var_os("RESIDENT_STORE_TEST").is_some())))
             .add_systems(Update, crate::npc_ownership_test::resident_store_reload.in_set(crate::clock::SimPhase::Gameplay).run_if(in_state(PlayMode::Live).and_then(|| std::env::var_os("RESIDENT_STORE_RELOAD").is_some())));
     }
@@ -62,7 +67,8 @@ pub struct TownStory {
     #[serde(default)]
     pub holidays: crate::holidays::HolidayHistory,
     /// What has changed for each of the world's Sims, by id.
-    pub sims: BTreeMap<u64, TownSim>,
+    #[serde(default, rename = "sims", skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) legacy_sims: BTreeMap<u64, TownSim>,
     /// Babies born in town.
     pub born: Vec<Newborn>,
     /// The latest happenings, newest last.
@@ -131,21 +137,7 @@ pub fn retype(lot: &mut s3bake::LotInfo, kind: Option<&str>) {
     };
 }
 
-#[derive(Clone, Default, Debug, Serialize, Deserialize)]
-pub struct TownSim {
-    /// Their life stage now (the world's own until they've had a birthday).
-    pub age: Option<String>,
-    /// Days into it.
-    pub days: f32,
-    pub dead: bool,
-    /// Moved away from town with their family.
-    #[serde(default)]
-    pub gone: bool,
-    pub partner: Option<u64>,
-    pub spouse: Option<u64>,
-    /// Career and level.
-    pub job: Option<(String, u32)>,
-}
+pub(crate) type TownSim = s3sim::residents::ResidentModel;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Newborn {
@@ -158,6 +150,17 @@ pub struct Newborn {
 }
 
 impl TownStory {
+    pub(crate) fn migrate_models(&mut self) {
+        self.residents.import_models(std::mem::take(&mut self.legacy_sims));
+    }
+
+    pub(crate) fn canonicalized(mut self) -> Self { self.migrate_models(); self }
+
+    pub(crate) fn model(&self, id: &u64) -> Option<&TownSim> {
+        // Read compatibility is needed before loading has imported appearance data.
+        self.residents.model(id).or_else(|| self.legacy_sims.get(id))
+    }
+
     /// Whether a town family has been evicted to the household bin. (The world's households
     /// with no home are its townies, out and about: not in the bin.)
     pub fn evicted(&self, h: &s3bake::HouseholdBaked) -> bool {
@@ -175,7 +178,7 @@ impl TownStory {
     /// One of the world's Sims as the town has them now (older, perhaps); none if they've
     /// passed away.
     pub fn apply(&self, mut s: Sim) -> Option<Sim> {
-        match self.sims.get(&s.id) {
+        match self.model(&s.id) {
             Some(t) if t.dead || t.gone => None,
             Some(t) => {
                 if let Some(a) = &t.age {
@@ -204,7 +207,6 @@ const BABY: f64 = 0.015;
 const FIND_JOB: f64 = 0.03;
 const PROMOTION: f64 = 0.02;
 /// An elder's chance each day, once their old age has run its course, of passing away.
-const PASS_AWAY: f64 = 0.1;
 /// Days into old age before a town elder may pass away (a household elder's span is 14–22).
 const ELDER_DAYS: f32 = 14.0;
 
@@ -226,7 +228,7 @@ fn progress(
     town: Option<Res<crate::premade::TownPremades>>,
     choice: Option<Res<crate::premade::PremadeChoice>>,
     members: Query<(&Sim, &Relationships), With<HouseholdMember>>,
-    mut spawned: Query<(Entity, &mut Sim, &Visibility), Without<HouseholdMember>>,
+    spawned: Query<(Entity, &Sim, &Visibility), Without<HouseholdMember>>,
     mut notes: ResMut<Notifications>,
     dormant: Res<crate::household::Dormant>,
     (world_info, household): (Option<Res<crate::loading::CurrentWorld>>, Option<Res<crate::interact::Household>>),
@@ -276,13 +278,12 @@ fn progress(
         .collect();
     let mut rng = rand::rng();
     let per_day = 1.0 / settings.lifespan.factor();
-    let mut aged: Vec<(u64, Age)> = Vec::new();
     let mut died: Vec<u64> = Vec::new();
     for _ in 0..days {
         // Everyone's record, from the world's to begin with (each at some point in their life
         // stage, so the town doesn't all have its birthdays at once).
         for (w, m) in &world {
-            if !story.sims.contains_key(&w.id) {
+            if story.residents.model(&w.id).is_none() {
                 // (A stage with no end, like an elder's, counts as a month or so.)
                 let span = crate::aging::stage_days(crate::premade::age_of(m.age));
                 let span = if span.is_finite() { span } else { ELDER_DAYS };
@@ -294,37 +295,40 @@ fn progress(
                     days: rng.random_range(0.0..span.max(1.0) * 0.6).floor(),
                     ..default()
                 };
-                story.sims.insert(w.id, t);
+                story.residents.model_or_insert_with(w.id, || t);
             }
         }
         let age_of = |story: &TownStory, w: &Who, m: &s3formats::premade::PremadeSim| {
-            story.sims.get(&w.id).and_then(|t| t.age.as_deref()).map_or_else(|| crate::premade::age_of(m.age), crate::save::age_from_name)
+            story.residents.model(&w.id).and_then(|t| t.age.as_deref()).map_or_else(|| crate::premade::age_of(m.age), crate::save::age_from_name)
         };
         // Growing older.
         if settings.aging {
             for (w, m) in &world {
                 let age = age_of(&story, w, m);
-                let Some(t) = story.sims.get_mut(&w.id) else { continue };
-                if t.dead {
+                let marathon = story.residents.records.get(&w.id).and_then(|r| r.state.as_ref()).is_some_and(|s| crate::journal::earned(Some(&s.journal), "Marathon Runner"));
+                let Some(t) = story.residents.model_mut(&w.id) else { continue };
+                if !t.present() {
                     continue;
                 }
                 t.days += per_day;
                 if age == Age::Elder {
-                    if t.days >= ELDER_DAYS && rng.random_bool(PASS_AWAY) {
+                    let mut survival = crate::aging::Aging { days: t.days, elder_span: t.elder_span, elder_risk: t.elder_risk };
+                    let dead = survival.old_age_today(settings.lifespan.elder_mortality() * if marathon { 0.75 } else { 1.0 });
+                    t.elder_risk = survival.elder_risk;
+                    if dead {
                         t.dead = true;
                         died.push(w.id);
                         let spouse = t.spouse;
                         story.tell(format!("{} has passed away peacefully of old age.", w.name));
-                        if let Some(s) = spouse.and_then(|s| story.sims.get_mut(&s)) {
+                        if let Some(s) = spouse.and_then(|s| story.residents.model_mut(&s)) {
                             s.spouse = None;
                         }
                     }
-                } else if t.days >= crate::aging::stage_days(age)
+                } else if crate::aging::remaining_days(crate::aging::stage_days(age), t.days, settings.lifespan.factor()) == 0
                     && let Some(next) = crate::aging::next_age(age)
                 {
                     t.days = 0.0;
                     t.age = Some(crate::save::age_name(next).to_string());
-                    aged.push((w.id, next));
                     story.tell(format!("{} is now {}.", w.name, crate::aging::age_word(next)));
                 }
             }
@@ -334,18 +338,18 @@ fn progress(
             continue;
         }
         let grown = |story: &TownStory, w: &Who, m: &s3formats::premade::PremadeSim| matches!(age_of(story, w, m), Age::YoungAdult | Age::Adult);
-        let alive = |story: &TownStory, id: u64| story.sims.get(&id).is_some_and(|t| !t.dead);
+        let alive = |story: &TownStory, id: u64| world.iter().any(|(w, _)| w.id == id) && story.residents.model(&id).is_some_and(|t| t.present());
         // Couples marry.
         for (w, _) in &world {
-            let Some(t) = story.sims.get(&w.id) else { continue };
-            if t.dead || t.spouse.is_some() {
+            let Some(t) = story.residents.model(&w.id) else { continue };
+            if !t.present() || t.spouse.is_some() {
                 continue;
             }
             let Some(p) = t.partner.filter(|p| alive(&story, *p) && *p > w.id) else { continue };
             if rng.random_bool(MARRY) {
                 let other = world.iter().find(|(o, _)| o.id == p).map(|(o, _)| o.name.clone()).unwrap_or_default();
                 for (a, b) in [(w.id, p), (p, w.id)] {
-                    if let Some(s) = story.sims.get_mut(&a) {
+                    if let Some(s) = story.residents.model_mut(&a) {
                         s.spouse = Some(b);
                         s.partner = None;
                     }
@@ -356,7 +360,7 @@ fn progress(
         // Singles pair off.
         let mut singles: Vec<&(Who, &s3formats::premade::PremadeSim)> = world
             .iter()
-            .filter(|(w, m)| grown(&story, w, m) && story.sims.get(&w.id).is_some_and(|t| !t.dead && t.partner.is_none() && t.spouse.is_none()))
+            .filter(|(w, m)| grown(&story, w, m) && story.residents.model(&w.id).is_some_and(|t| t.present() && t.partner.is_none() && t.spouse.is_none()))
             .collect();
         singles.shuffle(&mut rng);
         let mut taken: Vec<u64> = Vec::new();
@@ -376,7 +380,7 @@ fn progress(
             };
             taken.extend([a.0.id, b.0.id]);
             for (x, y) in [(a.0.id, b.0.id), (b.0.id, a.0.id)] {
-                if let Some(s) = story.sims.get_mut(&x) {
+                if let Some(s) = story.residents.model_mut(&x) {
                     s.partner = Some(y);
                 }
             }
@@ -387,9 +391,9 @@ fn progress(
             if !w.female || !grown(&story, w, m) {
                 continue;
             }
-            let Some(spouse) = story.sims.get(&w.id).filter(|t| !t.dead).and_then(|t| t.spouse) else { continue };
+            let Some(spouse) = story.residents.model(&w.id).filter(|t| t.present()).and_then(|t| t.spouse) else { continue };
             let kids = m.children.len() + story.born.iter().filter(|b| b.parents.0 == w.id).count();
-            if kids >= 3 || !rng.random_bool(BABY) {
+            if !alive(&story, spouse) || kids >= 3 || !rng.random_bool(BABY) {
                 continue;
             }
             let female = rng.random_bool(0.5);
@@ -403,7 +407,7 @@ fn progress(
             if !grown(&story, w, m) {
                 continue;
             }
-            let Some(t) = story.sims.get_mut(&w.id).filter(|t| !t.dead) else { continue };
+            let Some(t) = story.residents.model_mut(&w.id).filter(|t| t.present()) else { continue };
             match &mut t.job {
                 None => {
                     if rng.random_bool(FIND_JOB)
@@ -502,7 +506,7 @@ fn progress(
                     story.homes.insert(id, None);
                     story.townies.remove(&id);
                     for m in &h.members {
-                        story.sims.entry(m.id).or_default().gone = true;
+                        story.residents.model_or_insert_with(m.id, TownSim::default).gone = true;
                         moved_away.push(m.id);
                     }
                     (
@@ -530,11 +534,7 @@ fn progress(
             notes.push(n.clone());
         }
     }
-    for (e, mut s, vis) in &mut spawned {
-        if let Some((_, age)) = aged.iter().find(|(id, _)| *id == s.id) {
-            s.age = *age;
-            commands.entity(e).insert(crate::aging::NeedsNewBody);
-        }
+    for (e, s, vis) in &spawned {
         // (Out of sight, they're gone.)
         if (died.contains(&s.id) || moved_away.contains(&s.id)) && *vis == Visibility::Hidden {
             commands.entity(e).try_despawn();
@@ -542,7 +542,7 @@ fn progress(
     }
     let active: std::collections::HashSet<_> = members.iter().map(|(s, _)| s.id)
         .chain(dormant.member_ids()).chain(spawned.iter().map(|(_, s, _)| s.id)).collect();
-    crate::residents::sync_background(&mut story, &active);
+    crate::residents::sync_background(&mut story, &active, clock.minutes);
     info!("story progression: {days} day(s), {} news", story.news.len());
 }
 

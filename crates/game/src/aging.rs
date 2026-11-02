@@ -65,7 +65,7 @@ pub struct AteLifefruit;
 /// (`kLifeFruitEatenLifetimeExtensionDays`), an elder's a day more of life.
 const LIFEFRUIT_DAYS: f32 = 1.0;
 
-fn lifefruit(mut commands: Commands, mut q: Query<(Entity, &crate::sim::Sim, Option<&mut Aging>), With<AteLifefruit>>, mut notes: ResMut<crate::interact::Notifications>) {
+fn lifefruit(mut commands: Commands, mut q: Query<(Entity, &crate::sim::Sim, Option<&mut Aging>), With<AteLifefruit>>, mut story: ResMut<crate::story::TownStory>, mut notes: ResMut<crate::interact::Notifications>) {
     for (e, sim, aging) in &mut q {
         commands.entity(e).remove::<AteLifefruit>();
         if let Some(mut a) = aging {
@@ -73,6 +73,7 @@ fn lifefruit(mut commands: Commands, mut q: Query<(Entity, &crate::sim::Sim, Opt
             if sim.age == crate::sim::Age::Elder {
                 a.elder_span += LIFEFRUIT_DAYS;
             }
+            if let Some(model) = story.residents.model_mut(&sim.id) { model.days = a.days; model.elder_span = a.elder_span; }
         }
         notes.push(if sim.age == crate::sim::Age::Elder {
             format!("{} ate a Lifefruit: a day more of life.", sim.first)
@@ -89,11 +90,8 @@ fn reset_aging_day(mut day: ResMut<AgingDay>) {
 impl Aging {
     /// Accumulating daily survival probabilities preserves the configured hazard even
     /// when the lifespan changes, without re-rolling the Sim's fate on save/reload.
-    fn old_age_today(&mut self, probability: f64) -> bool {
-        let Some(risk) = self.elder_risk.as_mut() else { return self.days >= self.elder_span };
-        if self.days < 17.0 { return false; }
-        *risk += (1.0 - probability).ln();
-        *risk <= 0.0
+    pub(crate) fn old_age_today(&mut self, probability: f64) -> bool {
+        s3sim::residents::old_age_today(self.days, self.elder_span, &mut self.elder_risk, probability, 17.0)
     }
 }
 

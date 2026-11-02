@@ -491,7 +491,7 @@ fn town_fame(
             if playing.contains(&m.id) || m.first_name.is_empty() {
                 continue;
             }
-            let t = story.sims.get(&m.id);
+            let t = story.model(&m.id);
             if t.is_some_and(|t| t.dead || t.gone) {
                 continue;
             }

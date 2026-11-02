@@ -183,7 +183,7 @@ fn the_town_as_it_is(mut commands: Commands, save: Option<Res<crate::save::Pendi
         (None, None) => Default::default(),
     };
     commands.remove_resource::<crate::residents::RestoreResidents>();
-    commands.insert_resource(story);
+    commands.insert_resource(story.canonicalized());
     dormant.0 = d;
 }
 
@@ -327,8 +327,8 @@ fn switch_over(
             let ids: Vec<u64> = h.members.iter().map(|m| m.id).collect();
             let carry = move_in_town(game, &ids);
             let members: Vec<Sim> = h.members.iter().filter(|m| !m.first_name.is_empty()).map(|m| {
-                carry.town.residents.records.get(&m.id).filter(|r| r.checkpoint_at.is_some())
-                    .map_or_else(|| crate::premade::to_sim(m), |r| SaveGame::sim(&r.state))
+                crate::residents::projected_state(&carry.town, &m.id, carry.minutes)
+                    .map_or_else(|| crate::premade::to_sim(m), |state| SaveGame::sim(&state))
             }).filter_map(|s| carry.town.apply(s)).collect();
             info!("changing household: from the {from} household to the {} household (moving in)", h.name);
             commands.insert_resource(crate::home::PendingHousehold { last_name: h.name.clone(), members, premade: Some(h), ties: Vec::new(), pets: Vec::new() });
@@ -362,13 +362,15 @@ pub(crate) fn carry_over(
     clock.timeline = c.timeline.clone();
     clock.restored = true;
     delta.0 = 0.0;
-    commands.insert_resource(c.town.clone());
+    commands.insert_resource(c.town.clone().canonicalized());
     let people = c.family.clone();
     commands.queue(move |w: &mut World| w.resource_mut::<crate::family::Genealogy>().restore(&people));
     dormant.0 = c.dormant.clone();
     let live_ids: std::collections::HashSet<_> = sims.iter().map(|s| s.1.id).collect();
+    let member_ids: std::collections::HashSet<_> = sims.iter().filter(|s| s.3).map(|s| s.1.id).collect();
     let mut checkpoints: std::collections::BTreeMap<_, _> = c.town.residents.records.iter()
-        .filter(|(id, r)| r.checkpoint_at.is_some() && live_ids.contains(id)).map(|(id, r)| (*id, r.state.clone())).collect();
+        .filter(|(id, record)| live_ids.contains(id) && (record.checkpoint_at.is_some() || member_ids.contains(id)))
+        .filter_map(|(id, _)| crate::residents::projected_state(&c.town, id, c.minutes).map(|state| (*id, state))).collect();
     // Played households own their state; a stale city checkpoint cannot override them.
     for snapshot in c.dormant.iter().flat_map(|d| d.sims.iter().filter(|s| s.member)) {
         if live_ids.contains(&snapshot.id) { checkpoints.insert(snapshot.id, snapshot.clone()); }

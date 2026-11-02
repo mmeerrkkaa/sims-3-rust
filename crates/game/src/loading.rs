@@ -214,7 +214,7 @@ pub fn start_loading(
         .filter(|s| !s.member && s.background.is_some()).map(crate::save::SaveGame::sim).collect()).unwrap_or_default();
     // The town as the save (or the game changed over from) left it, and the households played
     // before, living their lives about town.
-    let story: crate::story::TownStory = save.as_ref().map(|s| s.0.town.clone()).or_else(|| carry.as_ref().map(|c| c.town.clone())).unwrap_or_default();
+    let story: crate::story::TownStory = save.as_ref().map(|s| s.0.town.clone()).or_else(|| carry.as_ref().map(|c| c.town.clone())).unwrap_or_default().canonicalized();
     let dormant: Vec<crate::save::SaveGame> = save.as_ref().map(|s| s.0.dormant.clone()).or_else(|| carry.as_ref().map(|c| c.dormant.clone())).unwrap_or_default();
     let former = crate::household::about_town(&dormant);
     commands.spawn((Camera2d, DespawnOnExit(AppState::Loading)));
@@ -308,9 +308,8 @@ pub fn start_loading(
         }
         let former_ids: std::collections::HashSet<_> = town.iter().filter(|s| gone.contains(&s.id)).map(|s| s.id).collect();
         for sim in &mut town {
-            if !former_ids.contains(&sim.id) && let Some(resident) = story.residents.records.get(&sim.id)
-                && resident.checkpoint_at.is_some() && !resident.state.member {
-                *sim = crate::save::SaveGame::sim(&resident.state);
+            if !former_ids.contains(&sim.id) && let Some(state) = crate::residents::projected_state(&story, &sim.id, 0.0) {
+                *sim = crate::save::SaveGame::sim(&state);
             }
         }
         let mut seen = std::collections::HashSet::new();
