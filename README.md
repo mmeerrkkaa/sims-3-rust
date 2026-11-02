@@ -48,8 +48,10 @@ Active dates and parties retain their participants, deadlines and accumulated re
 across saves.
 Cold residents have an initial coarse leisure itinerary between home and community lots.
 Departures, travel deadlines and returns are persistent and processed with a tick budget;
-detailed activation takes over the existing journey. Work/school itineraries and full
-city simulation tiers remain planned.
+detailed activation takes over the existing journey. Work and school calendars use
+the actual career locations and hours; idle detailed NPCs can rejoin a saved journey
+home while retaining logical identity and personal state. Full city simulation tiers
+remain planned.
 Remaining gameplay systems, navigation and background residents
 are still being migrated. Performance gains are measured as each subsystem changes.
 

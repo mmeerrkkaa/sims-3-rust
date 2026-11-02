@@ -6,11 +6,33 @@ use serde::{Serialize,Deserialize};
 use crate::{ResidentId,Tick,residents::LotId};
 pub const DAY:Tick=14_400;
 #[derive(Clone,Copy,Debug,PartialEq,Eq,Serialize,Deserialize)]
-pub struct Plan {pub home:LotId,pub destination:LotId,pub departure:Tick,pub travel:Tick,pub stay:Tick}
+pub struct Plan {
+    pub home:LotId,pub destination:LotId,pub departure:Tick,pub travel:Tick,pub stay:Tick,
+    #[serde(default)] pub work:Option<Commitment>,
+    #[serde(default)] pub school:Option<Commitment>,
+}
+#[derive(Clone,Copy,Debug,PartialEq,Eq,Serialize,Deserialize)]
+pub enum Purpose {Work,School}
+#[derive(Clone,Copy,Debug,PartialEq,Eq,Serialize,Deserialize)]
+pub struct Commitment {
+    pub purpose:Purpose,pub destination:LotId,pub days:u8,pub start:Tick,pub end:Tick,pub travel:Tick,
+    #[serde(default)] pub cancelled_day:Option<u64>,
+}
+impl Commitment {
+    fn occurrence(self,day:u64)->Option<(Tick,Tick)> {
+        if self.days&(1<<(day%7))==0 || self.cancelled_day==Some(day) {return None;}
+        let start=day*DAY+self.start;let end=day*DAY+self.end+if self.end<=self.start {DAY} else {0};
+        Some((start.saturating_sub(self.travel),end))
+    }
+}
 #[derive(Clone,Copy,Debug,PartialEq,Eq,Serialize,Deserialize)]
 pub enum Place {At{lot:LotId},Travel{from:LotId,to:LotId,depart:Tick,arrive:Tick}}
 #[derive(Clone,Debug,PartialEq,Eq,Serialize,Deserialize)]
-pub struct Resident {pub plan:Plan,pub place:Place,pub next:Tick,pub transitions:u64}
+pub struct Resident {
+    pub plan:Plan,pub place:Place,pub next:Tick,pub transitions:u64,
+    #[serde(default)] pub activity:Option<Commitment>,
+    #[serde(default)] pub release:Option<Tick>,
+}
 #[derive(Clone,Debug,Default,Serialize,Deserialize)]
 pub struct City {
     pub residents:BTreeMap<ResidentId,Resident>,
@@ -21,9 +43,21 @@ pub struct City {
 pub struct Work {pub processed:usize,pub overdue:usize,pub oldest_delay:Tick}
 impl Plan {
     fn validate(self) {assert!(self.departure<DAY);assert!(self.travel>0 && self.stay>0);assert_ne!(self.home,self.destination);}
-    fn next_departure(self,after:Tick)->Tick {
-        let today=after/DAY*DAY+self.departure;
-        if today>after {today} else {today.saturating_add(DAY)}
+    fn next_visit(self,after:Tick)->(Tick,Option<Commitment>,Option<Tick>) {
+        let first=(after/DAY).saturating_sub(1);let mut best=(Tick::MAX,None,None);
+        for day in first..=first+9 {
+            for activity in [self.work,self.school].into_iter().flatten() {
+                if let Some((depart,end))=activity.occurrence(day) {
+                    if depart>after && depart<best.0 {best=(depart,Some(activity),Some(end));}
+                }
+            }
+            let leisure=day*DAY+self.departure;
+            let end=leisure.saturating_add(self.travel*2).saturating_add(self.stay);
+            let overlaps=[self.work,self.school].into_iter().flatten().any(|duty|
+                (day.saturating_sub(1)..=day+1).any(|d|duty.occurrence(d).is_some_and(|(from,until)|leisure<until.saturating_add(duty.travel) && end>from)));
+            if leisure>after && leisure<best.0 && !overlaps {best=(leisure,None,None);}
+        }
+        assert_ne!(best.0,Tick::MAX,"calendar must have a future event");best
     }
 }
 impl City {
@@ -36,10 +70,26 @@ impl City {
     pub fn take(&mut self,id:ResidentId)->Option<Resident> {
         let resident=self.residents.remove(&id)?;self.due.remove(&(resident.next,id));Some(resident)
     }
+    /// A retired detailed visitor still has a real return journey to its home.
+    pub fn rejoin(&mut self,id:ResidentId,plan:Plan,now:Tick,from:LotId,travel:Tick) {
+        self.take(id);self.seed(id,plan,now);
+        if from!=plan.home {
+            assert!(travel>0);let resident=self.residents.get_mut(&id).unwrap();self.due.remove(&(resident.next,id));
+            resident.place=Place::Travel{from,to:plan.home,depart:now,arrive:now.saturating_add(travel)};
+            resident.next=now.saturating_add(travel);resident.activity=None;resident.release=None;self.due.insert((resident.next,id));
+        }
+    }
     pub fn seed(&mut self,id:ResidentId,plan:Plan,now:Tick) {
         plan.validate();
-        if let Some(resident)=self.residents.get_mut(&id) {resident.plan=plan;return;}
-        let next=plan.next_departure(now);self.residents.insert(id,Resident{plan,place:Place::At{lot:plan.home},next,transitions:0});self.due.insert((next,id));
+        if let Some(resident)=self.residents.get_mut(&id) {
+            if resident.plan!=plan && resident.place==(Place::At{lot:resident.plan.home}) && resident.next>now {
+                self.due.remove(&(resident.next,id));let (next,activity,release)=plan.next_visit(now);
+                resident.next=next;resident.activity=activity;resident.release=release;self.due.insert((next,id));
+            }
+            resident.plan=plan;return;
+        }
+        let (next,activity,release)=plan.next_visit(now);
+        self.residents.insert(id,Resident{plan,place:Place::At{lot:plan.home},next,transitions:0,activity,release});self.due.insert((next,id));
     }
     /// Current position on a straight coarse segment; road/path refinement belongs
     /// to the detailed handoff. Original endpoints/dates survive save/load.
@@ -59,13 +109,17 @@ impl City {
             let plan=resident.plan;
             match resident.place {
                 Place::At{lot}=> {
-                    let to=if lot==plan.home {plan.destination} else {plan.home};
-                    resident.place=Place::Travel{from:lot,to,depart:at,arrive:at.saturating_add(plan.travel)};
-                    resident.next=at.saturating_add(plan.travel);
+                    let to=if lot==plan.home {resident.activity.map_or(plan.destination,|d|d.destination)} else {plan.home};
+                    let travel=resident.activity.map_or(plan.travel,|d|d.travel);
+                    resident.place=Place::Travel{from:lot,to,depart:at,arrive:at.saturating_add(travel)};
+                    resident.next=at.saturating_add(travel);
                 }
                 Place::Travel{to,..}=> {
                     resident.place=Place::At{lot:to};
-                    resident.next=if to==plan.home {plan.next_departure(at)} else {at.saturating_add(plan.stay)};
+                    if to==plan.home {
+                        let (next,activity,release)=plan.next_visit(at);resident.next=next;resident.activity=activity;resident.release=release;
+                    } else {resident.next=resident.release.unwrap_or_else(||at.saturating_add(plan.stay)).max(at);}
+
                 }
             }
             resident.transitions+=1;self.due.insert((resident.next,id));self.spent+=1;processed+=1;
@@ -77,7 +131,7 @@ impl City {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn plan(id:u64)->Plan {Plan{home:10+id%50,destination:100+id%25,departure:10200+id%1200,travel:150+id%100,stay:900+id%300}}
+    fn plan(id:u64)->Plan {Plan{home:10+id%50,destination:100+id%25,departure:10200+id%1200,travel:150+id%100,stay:900+id%300,work:None,school:None}}
     #[test]
     fn thousand_residents_execute_distributed_journeys_and_restore_in_flight() {
         let mut city=City::default();for id in 0..1000 {city.seed(id,plan(id),0);}
@@ -108,5 +162,48 @@ mod tests {
         let mut city=City::default();city.seed(7,plan(7),0);city.advance(10207,4);assert_eq!(city.residents[&7].transitions,1);
         let journey=city.take(7).unwrap();assert_eq!(journey.place,Place::Travel{from:17,to:107,depart:10207,arrive:10364});
         assert_eq!(city.advance(20000,100).processed,0);assert!(city.residents.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod calendar_tests {
+    use super::*;
+    fn plan()->Plan {Plan{home:1,destination:2,departure:10200,travel:200,stay:1200,work:None,school:None}}
+    fn duty(purpose:Purpose,start:Tick,end:Tick)->Commitment {Commitment{purpose,destination:3,days:31,start,end,travel:250,cancelled_day:None}}
+    #[test]
+    fn school_weekend_and_teen_after_school_job_do_not_overlap_leisure() {
+        let mut city=City::default();let mut p=plan();p.school=Some(duty(Purpose::School,5400,8400));p.work=Some(duty(Purpose::Work,9600,11400));city.seed(1,p,0);
+        assert_eq!(city.residents[&1].next,5150);
+        for now in 1..DAY*7 {city.advance(now,16);}
+        let r=&city.residents[&1];assert_eq!(r.transitions,48); // 5*(school+job)*4 + weekend leisure*4
+        assert_eq!(r.place,Place::At{lot:1});assert_eq!(r.next,DAY*7+5150);
+    }
+    #[test]
+    fn night_shift_keeps_release_date_across_checkpoint_and_cancels_clashing_outing() {
+        let mut p=plan();p.work=Some(duty(Purpose::Work,13200,3600));p.departure=12600;
+        let mut city=City::default();city.seed(1,p,0);assert_eq!(city.residents[&1].next,12950);
+        city.advance(13400,16);assert_eq!(city.residents[&1].release,Some(DAY+3600));
+        let mut city:City=serde_json::from_str(&serde_json::to_string(&city).unwrap()).unwrap();
+        city.advance(DAY+3600,16);assert!(matches!(city.residents[&1].place,Place::Travel{to:1,..}));
+        city.advance(DAY+3850,16);assert_eq!(city.residents[&1].place,Place::At{lot:1});
+    }
+    #[test]
+    fn calendar_cancellation_replans_only_future_departure_without_erasing_overdue_history() {
+        let mut p=plan();let school=duty(Purpose::School,5400,9000);p.school=Some(school);let mut city=City::default();city.seed(1,p,0);
+        p.school.as_mut().unwrap().cancelled_day=Some(0);city.seed(1,p,1000);assert_eq!(city.residents[&1].next,10200);
+        let mut city=City::default();p.school=Some(school);city.seed(1,p,0);p.school=None;city.seed(1,p,6000);
+        assert_eq!(city.residents[&1].next,5150);city.advance(6000,8);assert_eq!(city.residents[&1].release,Some(9000));
+    }
+}
+
+#[cfg(test)]
+mod return_tests {
+    use super::*;
+    #[test]
+    fn rejoining_retired_visitor_returns_home_before_resuming_calendar() {
+        let plan=Plan{home:1,destination:2,departure:10200,travel:150,stay:1200,work:None,school:None};let mut city=City::default();
+        city.rejoin(7,plan,12000,2,175);assert_eq!(city.residents[&7].next,12175);
+        let mut city:City=serde_json::from_str(&serde_json::to_string(&city).unwrap()).unwrap();assert_eq!(city.advance(12174,10).processed,0);
+        city.advance(12175,10);assert_eq!(city.residents[&7].place,Place::At{lot:1});assert_eq!(city.residents[&7].next,DAY+10200);
     }
 }

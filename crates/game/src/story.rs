@@ -30,6 +30,7 @@ impl Plugin for StoryPlugin {
             .init_resource::<crate::city_mobility::MobilityWorkload>()
             .add_systems(OnEnter(crate::AppState::Loading),|mut work:ResMut<crate::city_mobility::MobilityWorkload>|*work=default())
             .add_systems(Update,crate::city_mobility::reset_frame.in_set(crate::clock::SimPhase::Advance))
+            .add_systems(PostUpdate,crate::city_mobility::park.before(crate::resident_bodies::maintain).run_if(in_state(PlayMode::Live)))
             .add_systems(Update,crate::city_mobility::handoff.after(crate::residents::reconcile_daily).in_set(crate::clock::SimPhase::Prepare).run_if(in_state(PlayMode::Live)))
             .add_systems(crate::clock::SimTick,crate::city_mobility::advance.after(crate::residents::reconcile_daily).in_set(crate::aging::LifecyclePhase::Town))
             .init_resource::<crate::resident_bodies::BodyCache>()
@@ -46,7 +47,9 @@ impl Plugin for StoryPlugin {
             .add_systems(crate::clock::SimTick, (merge_created, crate::residents::seed_residents, crate::life::capture_subscriber::<crate::life::LifeEvent, 6>, crate::residents::model_events, progress, crate::residents::reconcile_daily, read_the_news).chain().in_set(crate::aging::LifecyclePhase::Town))
             .add_systems(crate::clock::SimTick, (crate::life::capture_subscriber::<crate::life::LifeEvent, 6>, crate::residents::model_events).chain().in_set(crate::wishes::AspirationPhase::Initialize));
         #[cfg(local_validation)]
-        app.init_resource::<crate::npc_ownership_test::CityMobilityProbe>()
+        app.init_resource::<crate::npc_ownership_test::CalendarProbe>()
+            .add_systems(Update,crate::npc_ownership_test::calendar_frame.in_set(crate::clock::SimPhase::Gameplay).run_if(in_state(PlayMode::Live).and_then(||std::env::var_os("CITY_CALENDAR_TEST").is_some() || std::env::var_os("CITY_CALENDAR_RELOAD").is_some())))
+            .init_resource::<crate::npc_ownership_test::CityMobilityProbe>()
             .add_systems(Update,crate::npc_ownership_test::city_mobility_frame.in_set(crate::clock::SimPhase::Gameplay).run_if(in_state(PlayMode::Live).and_then(||std::env::var_os("CITY_MOBILITY_TEST").is_some() || std::env::var_os("CITY_MOBILITY_RELOAD").is_some())))
             .init_resource::<crate::npc_ownership_test::SocialSaveProbe>()
             .add_systems(Update,crate::npc_ownership_test::social_save_frame.in_set(crate::clock::SimPhase::Gameplay).run_if(in_state(PlayMode::Live).and_then(||std::env::var_os("SOCIAL_SAVE_TEST").is_some() || std::env::var_os("SOCIAL_SAVE_RELOAD").is_some())))

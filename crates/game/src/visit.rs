@@ -277,6 +277,7 @@ fn arrivals(
             floor.0 = resume.floor;
         }
         commands.entity(e).remove::<(AtRabbitHole, Trip, ResumeLotPosition, crate::interact::OffLot)>().insert((OnLot(lot), Visibility::Inherited));
+        commands.entity(e).insert(crate::city_mobility::OriginLot(l.id));
         if let Some(role) = role {
             let mut entity = commands.entity(e);
             entity.remove::<RestoreLotRole>();

@@ -67,6 +67,8 @@ pub struct SavedSim {
     pub invited_at: Option<f64>,
     #[serde(default,skip_serializing_if="Option::is_none")]
     pub visitor_until:Option<f64>,
+    #[serde(default,skip_serializing_if="std::ops::Not::not")]
+    pub coarse_actor:bool,
     #[serde(default,skip_serializing_if="Option::is_none")]
     pub meeting:Option<crate::meetups::SavedMeeting>,
     #[serde(default,skip_serializing_if="Option::is_none")]
@@ -698,6 +700,7 @@ pub(crate) fn saved_look(sim: &Sim) -> SavedSim {
         whereabouts: "away".into(),
         invited_at: None,
         visitor_until:None,
+        coarse_actor:false,
         meeting:None,
         outing_departure:None,
         world_location: None,
@@ -1065,6 +1068,7 @@ pub(crate) struct CaptureResidents<'w,'s> {
     identities: Query<'w,'s,(Entity,&'static Sim),Without<crate::services::ServiceNpc>>,
     invitations: Query<'w,'s,&'static Invited>,
     visitors: Query<'w,'s,&'static Visitor>,
+    coarse: Query<'w,'s,(),With<crate::city_mobility::CoarseActor>>,
     meetings: Query<'w,'s,&'static crate::meetups::Meeting>,
     departures: Query<'w,'s,&'static crate::meetups::OutingDeparture>,
     pending: Option<Res<'w,crate::ghosts::PendingRels>>,
@@ -1113,6 +1117,7 @@ impl CaptureResidents<'_,'_> {
                 id: sim.id,
                 invited_at: invitations.get(e).ok().map(|i| i.arrive_at),
                 visitor_until:self.visitors.get(e).ok().map(|v|v.leave_at).filter(|t|t.is_finite()),
+                coarse_actor:self.coarse.contains(e),
                 meeting:self.meetings.get(e).ok().and_then(|meeting|meeting.saved(&world.data)),
                 outing_departure:self.departures.get(e).ok().and_then(|departure|world.data.lots.get(departure.0).map(|lot|lot.id)),
                 look: sim.look,
@@ -1627,6 +1632,8 @@ fn restore_people_at<'a>(commands: &mut Commands, minutes: f64, deck: bool, worl
             wishes.dream_state = s.dream_state.clone();
             ec.insert(wishes);
         }
+        if placement {ec.remove::<crate::city_mobility::CoarseActor>();}
+        if s.coarse_actor && !s.member {ec.insert(crate::city_mobility::CoarseActor);}
         if placement {ec.remove::<crate::meetups::Meeting>();}
         if let Some(saved)=&s.meeting {
             if let Some(meeting)=crate::meetups::Meeting::restore(saved,&world.data) {
