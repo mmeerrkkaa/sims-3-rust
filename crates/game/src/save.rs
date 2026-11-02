@@ -66,6 +66,8 @@ pub struct SavedSim {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invited_at: Option<f64>,
     #[serde(default,skip_serializing_if="Option::is_none")]
+    pub visitor_until:Option<f64>,
+    #[serde(default,skip_serializing_if="Option::is_none")]
     pub meeting:Option<crate::meetups::SavedMeeting>,
     #[serde(default,skip_serializing_if="Option::is_none")]
     pub outing_departure:Option<u64>,
@@ -486,6 +488,8 @@ fn restore_broken(
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct SaveGame {
     #[serde(default)]
+    pub social_events:crate::social_state::SavedEvents,
+    #[serde(default)]
     pub broken_objects: Vec<SavedBroken>,
     /// Grime and unmade beds.
     #[serde(default)]
@@ -693,6 +697,7 @@ pub(crate) fn saved_look(sim: &Sim) -> SavedSim {
         selected: false,
         whereabouts: "away".into(),
         invited_at: None,
+        visitor_until:None,
         meeting:None,
         outing_departure:None,
         world_location: None,
@@ -1059,6 +1064,7 @@ pub(crate) struct CaptureResidents<'w,'s> {
     people: CapturePeople<'w,'s>,
     identities: Query<'w,'s,(Entity,&'static Sim),Without<crate::services::ServiceNpc>>,
     invitations: Query<'w,'s,&'static Invited>,
+    visitors: Query<'w,'s,&'static Visitor>,
     meetings: Query<'w,'s,&'static crate::meetups::Meeting>,
     departures: Query<'w,'s,&'static crate::meetups::OutingDeparture>,
     pending: Option<Res<'w,crate::ghosts::PendingRels>>,
@@ -1106,6 +1112,7 @@ impl CaptureResidents<'_,'_> {
             saved.push(SavedSim {
                 id: sim.id,
                 invited_at: invitations.get(e).ok().map(|i| i.arrive_at),
+                visitor_until:self.visitors.get(e).ok().map(|v|v.leave_at).filter(|t|t.is_finite()),
                 meeting:self.meetings.get(e).ok().and_then(|meeting|meeting.saved(&world.data)),
                 outing_departure:self.departures.get(e).ok().and_then(|departure|world.data.lots.get(departure.0).map(|lot|lot.id)),
                 look: sim.look,
@@ -1229,6 +1236,7 @@ pub(crate) fn save_game(
         Res<crate::telescope::Discoveries>,
     ),
     capture: CaptureResidents,
+    (date,party,pending_social):(Option<Res<crate::dates::Date>>,Option<Res<crate::parties::Party>>,Option<Res<crate::social_state::PendingEvents>>),
     (bought, _exit, graves, ghosts): (
         Query<(&GameObject, &Transform, Option<&crate::objects::Design>, Option<&crate::paintings::Hung>), With<Bought>>,
         Option<Res<crate::interact::LotExit>>,
@@ -1288,6 +1296,7 @@ pub(crate) fn save_game(
         crate::residents::remember_grave(&mut story,&grave.sim);
     }
     let game = SaveGame {
+        social_events:pending_social.as_ref().map_or_else(||crate::social_state::SavedEvents::capture(date.as_deref(),party.as_deref(),&ids),|pending|pending.0.clone()),
         broken_objects: broken.iter().filter(|b| b.2).map(|(o, tf, _, charred, ..)| SavedBroken { objd: o.objd, position: tf.translation.to_array(), charred }).collect(),
         puddles: crate::puddles::saved(&clock, &puddles),
         laundry: laundry.saved(),
@@ -1635,7 +1644,7 @@ fn restore_people_at<'a>(commands: &mut Commands, minutes: f64, deck: bool, worl
         if s.member {
             ec.insert(HouseholdMember).remove::<(Visitor, OffLot)>();
         } else if s.whereabouts == "visiting" {
-            ec.insert(Visitor { leave_at: minutes + 180.0 });
+            ec.insert(Visitor { leave_at: s.visitor_until.unwrap_or(minutes + 180.0) });
         } else {
             ec.remove::<Visitor>().insert((OffLot, Visibility::Hidden));
         }
@@ -1683,6 +1692,7 @@ pub(crate) fn apply_loaded_game(
     // The clock was replaced, so this frame's pre-load elapsed time must not
     // advance restored temperature, recovery timers, or other simulation state.
     delta.0 = 0.0;
+    commands.insert_resource(crate::social_state::PendingEvents(game.social_events.clone()));
     commands.insert_resource(PendingBroken(game.broken_objects.clone(), None));
     commands.insert_resource(PendingStates(game.object_states.clone(), None));
     commands.insert_resource(crate::puddles::PendingPuddles(game.puddles.clone()));

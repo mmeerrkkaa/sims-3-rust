@@ -28,6 +28,8 @@ impl Plugin for StoryPlugin {
             .init_resource::<crate::residents::ResidentActors>()
             .init_resource::<crate::residents::MaterializeRequests>()
             .init_resource::<crate::resident_bodies::BodyCache>()
+            .add_systems(OnEnter(crate::AppState::Loading),crate::social_state::clear)
+            .add_systems(Update,crate::social_state::restore.after(crate::residents::reconcile_daily).in_set(crate::clock::SimPhase::Prepare).run_if(in_state(PlayMode::Live)))
             .add_systems(OnEnter(crate::AppState::Loading), |mut cache:ResMut<crate::resident_bodies::BodyCache>| *cache=default())
             .add_systems(PostUpdate, crate::resident_bodies::maintain.before(bevy::ui::UiSystems::Prepare).run_if(in_state(PlayMode::Live)))
             .add_systems(OnEnter(crate::AppState::Loading), |mut requests:ResMut<crate::residents::MaterializeRequests>| *requests=default())
@@ -39,7 +41,9 @@ impl Plugin for StoryPlugin {
             .add_systems(crate::clock::SimTick, (merge_created, crate::residents::seed_residents, crate::life::capture_subscriber::<crate::life::LifeEvent, 6>, crate::residents::model_events, progress, crate::residents::reconcile_daily, read_the_news).chain().in_set(crate::aging::LifecyclePhase::Town))
             .add_systems(crate::clock::SimTick, (crate::life::capture_subscriber::<crate::life::LifeEvent, 6>, crate::residents::model_events).chain().in_set(crate::wishes::AspirationPhase::Initialize));
         #[cfg(local_validation)]
-        app.init_resource::<crate::npc_ownership_test::DurableMeetingProbe>()
+        app.init_resource::<crate::npc_ownership_test::SocialSaveProbe>()
+            .add_systems(Update,crate::npc_ownership_test::social_save_frame.in_set(crate::clock::SimPhase::Gameplay).run_if(in_state(PlayMode::Live).and_then(||std::env::var_os("SOCIAL_SAVE_TEST").is_some() || std::env::var_os("SOCIAL_SAVE_RELOAD").is_some())))
+            .init_resource::<crate::npc_ownership_test::DurableMeetingProbe>()
             .add_systems(Update,crate::npc_ownership_test::durable_meeting_frame.in_set(crate::clock::SimPhase::Gameplay).run_if(in_state(PlayMode::Live).and_then(||std::env::var_os("DURABLE_MEETING_TEST").is_some())))
             .init_resource::<crate::npc_ownership_test::BodyCacheProbe>()
             .add_systems(Update, crate::npc_ownership_test::body_cache_frame.in_set(crate::clock::SimPhase::Gameplay).run_if(in_state(PlayMode::Live).and_then(||std::env::var_os("BODY_CACHE_TEST").is_some() || std::env::var_os("BODY_CACHE_RELOAD").is_some())))

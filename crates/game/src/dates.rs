@@ -34,8 +34,8 @@ pub struct Date {
     pub b: Entity,
     pub until: f64,
     /// Friendship plus romance when it began.
-    start: f32,
-    next_nudge: f64,
+    pub(crate) start: f32,
+    pub(crate) next_nudge: f64,
 }
 
 /// How long a date lasts (game minutes).
@@ -115,3 +115,6 @@ fn dates(
     }
 }
 
+
+#[cfg(local_validation)]
+pub(crate) fn validate_situation(world:&mut World) {use bevy::ecs::system::RunSystemOnce;world.run_system_once(dates).unwrap();}

@@ -35,7 +35,7 @@ impl Plugin for PartiesPlugin {
 }
 
 /// The kinds of party (the game's `PartyPickerDialog.PartyType`, those of the base game).
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub enum PartyKind {
     #[default]
     House,
@@ -68,7 +68,7 @@ impl PartyKind {
 }
 
 /// The dress code (the game's `ClothingType`: casual, formal, swimwear).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Dress {
     Casual,
     Formal,
@@ -271,7 +271,7 @@ pub struct Party {
     /// Those here, and when each is to leave (game minutes).
     pub here: HashMap<Entity, f64>,
     /// Those who've left, and their moods as they did.
-    pub gone: Vec<Entity>,
+    pub gone: Vec<u64>,
     pub left: u32,
     pub moods: f32,
     /// The first guest's arrived.
@@ -285,7 +285,7 @@ pub struct Party {
     pub wedding_day: bool,
     /// The vows being watched.
     pub vows: bool,
-    last_check: f64,
+    pub(crate) last_check: f64,
 }
 
 impl Party {
@@ -579,7 +579,7 @@ fn run_party(
     }
     // Guests arriving: dressed for it, staying as long as they get on with the household.
     for &g in &p.guests.clone() {
-        if p.here.contains_key(&g) || p.gone.contains(&g) {
+        if p.here.contains_key(&g) || guests.get(g).is_ok_and(|q|p.gone.contains(&q.0.id)) {
             continue;
         }
         let Ok((gs, Some(mut v), _, _, _, false, ..)) = guests.get_mut(g) else { continue };
@@ -659,11 +659,11 @@ fn run_party(
         }
         for g in hosting {
             p.here.remove(&g);
-            p.gone.push(g);
+            if let Ok(q)=guests.get(g) {p.gone.push(q.0.id);} else if let Ok(q)=members.get(g) {p.gone.push(q.1.id);}
         }
         for (g, mood) in going {
             p.here.remove(&g);
-            p.gone.push(g);
+            if let Ok(q)=guests.get(g) {p.gone.push(q.0.id);} else if let Ok(q)=members.get(g) {p.gone.push(q.1.id);}
             p.left += 1;
             p.moods += mood;
             // (Their liking for the host goes with how they feel.)
@@ -684,7 +684,7 @@ fn run_party(
         }
     }
     // The last guest gone (and nobody still to come): it's over.
-    let to_come = p.guests.iter().any(|g| !p.here.contains_key(g) && !p.gone.contains(g) && guests.get(*g).is_ok_and(|q| q.7));
+    let to_come = p.guests.iter().any(|g| !p.here.contains_key(g) && !guests.get(*g).is_ok_and(|q|p.gone.contains(&q.0.id)) && guests.get(*g).is_ok_and(|q| q.7));
     if p.begun && p.here.is_empty() && !to_come {
         let legendary = members.get(p.host).is_ok_and(|h| crate::wishes::has(h.4, "LegendaryHost"));
         let failed = matches!(p.kind, PartyKind::Birthday | PartyKind::Wedding) && !p.succeeded;
@@ -800,3 +800,6 @@ mod tests {
 
 #[cfg(local_validation)]
 pub(crate) fn validate_cold_party(world:&mut World) { use bevy::ecs::system::RunSystemOnce; world.run_system_once(phone_party).unwrap(); }
+
+#[cfg(local_validation)]
+pub(crate) fn validate_situation(world:&mut World) {use bevy::ecs::system::RunSystemOnce;world.run_system_once(run_party).unwrap();}
