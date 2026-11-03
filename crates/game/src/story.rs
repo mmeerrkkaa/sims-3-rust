@@ -28,9 +28,10 @@ impl Plugin for StoryPlugin {
             .init_resource::<crate::residents::ResidentActors>()
             .init_resource::<crate::residents::MaterializeRequests>()
             .init_resource::<crate::city_mobility::MobilityWorkload>()
+            .init_resource::<crate::city_mobility::PublicDemand>()
             .init_resource::<crate::coarse_needs::CareLots>()
             .add_systems(Update,crate::coarse_needs::prepare.in_set(crate::clock::SimPhase::Prepare).run_if(in_state(PlayMode::Live)))
-            .add_systems(OnEnter(crate::AppState::Loading),|mut work:ResMut<crate::city_mobility::MobilityWorkload>|*work=default())
+            .add_systems(OnEnter(crate::AppState::Loading),|mut work:ResMut<crate::city_mobility::MobilityWorkload>,mut demand:ResMut<crate::city_mobility::PublicDemand>|{*work=default();*demand=default();})
             .add_systems(Update,crate::city_mobility::reset_frame.in_set(crate::clock::SimPhase::Advance))
             .add_systems(PostUpdate,crate::city_mobility::park.before(crate::resident_bodies::maintain).run_if(in_state(PlayMode::Live)))
             .add_systems(Update,crate::city_mobility::handoff.after(crate::residents::reconcile_daily).in_set(crate::clock::SimPhase::Prepare).run_if(in_state(PlayMode::Live)))
@@ -41,7 +42,7 @@ impl Plugin for StoryPlugin {
             .add_systems(OnEnter(crate::AppState::Loading), |mut cache:ResMut<crate::resident_bodies::BodyCache>| *cache=default())
             .add_systems(PostUpdate, crate::resident_bodies::maintain.before(bevy::ui::UiSystems::Prepare).run_if(in_state(PlayMode::Live)))
             .add_systems(OnEnter(crate::AppState::Loading), |mut requests:ResMut<crate::residents::MaterializeRequests>| *requests=default())
-            .add_systems(Update, (prepare_story, merge_created, crate::residents::seed_residents, crate::residents::register_graves, crate::residents::resolve_calls, crate::residents::materialize_requested, crate::residents::prepare_personal_state, crate::residents::hydrate_new_actors, crate::residents::bind_contacts, crate::residents::resolve_calls, crate::residents::reconcile_daily).chain().run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Prepare))
+            .add_systems(Update, (prepare_story, merge_created, crate::residents::seed_residents, crate::residents::register_graves, crate::residents::resolve_calls, crate::city_mobility::request_public, crate::residents::materialize_requested, crate::residents::prepare_personal_state, crate::residents::hydrate_new_actors, crate::residents::bind_contacts, crate::residents::resolve_calls, crate::residents::reconcile_daily).chain().run_if(in_state(PlayMode::Live)).in_set(crate::clock::SimPhase::Prepare))
             // Actors spawned after Prepare must finish their personal handoff
             // before a same-frame save can checkpoint their temporary defaults.
             .add_systems(Update, (crate::residents::prepare_personal_state, crate::residents::hydrate_new_actors, crate::residents::bind_contacts,crate::city_mobility::complete,crate::coarse_needs::mirror).chain()
@@ -49,7 +50,9 @@ impl Plugin for StoryPlugin {
             .add_systems(crate::clock::SimTick, (merge_created, crate::residents::seed_residents, crate::life::capture_subscriber::<crate::life::LifeEvent, 6>, crate::residents::model_events, progress, crate::residents::reconcile_daily, read_the_news).chain().in_set(crate::aging::LifecyclePhase::Town))
             .add_systems(crate::clock::SimTick, (crate::life::capture_subscriber::<crate::life::LifeEvent, 6>, crate::residents::model_events).chain().in_set(crate::wishes::AspirationPhase::Initialize));
         #[cfg(local_validation)]
-        app.init_resource::<crate::npc_ownership_test::CoarseNeedsProbe>()
+        app.init_resource::<crate::npc_ownership_test::PublicProbe>()
+            .add_systems(Update,crate::npc_ownership_test::public_frame.in_set(crate::clock::SimPhase::Gameplay).run_if(in_state(PlayMode::Live).and_then(||std::env::var_os("PUBLIC_CITY_TEST").is_some() || std::env::var_os("PUBLIC_CITY_RELOAD").is_some())))
+            .init_resource::<crate::npc_ownership_test::CoarseNeedsProbe>()
             .add_systems(Update,crate::npc_ownership_test::coarse_needs_frame.in_set(crate::clock::SimPhase::Gameplay).run_if(in_state(PlayMode::Live).and_then(||std::env::var_os("COARSE_NEEDS_TEST").is_some() || std::env::var_os("COARSE_NEEDS_RELOAD").is_some())))
             .init_resource::<crate::npc_ownership_test::CoarseResultsProbe>()
             .add_systems(Update,crate::npc_ownership_test::coarse_results_frame.in_set(crate::clock::SimPhase::Gameplay).run_if(in_state(PlayMode::Live).and_then(||std::env::var_os("COARSE_RESULTS_TEST").is_some() || std::env::var_os("COARSE_RESULTS_RELOAD").is_some())))

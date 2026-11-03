@@ -438,6 +438,7 @@ impl ResidentCall {
 #[derive(Resource,Default)]
 pub(crate) struct MaterializeRequests { queue:std::collections::VecDeque<u64>, pending:std::collections::HashSet<u64> }
 impl MaterializeRequests {
+    pub(crate) fn is_empty(&self)->bool {self.queue.is_empty()}
     pub(crate) fn request(&mut self,id:u64) { if self.pending.insert(id) { self.queue.push_back(id); } }
 }
 

@@ -65,7 +65,7 @@ fn stroll(
     mut commands: Commands,
     clock: Res<GameClock>,
     sidewalk: Option<Res<Sidewalk>>,
-    mut townies: Query<(Entity, &mut Townie, &mut Transform, &mut Visibility, &mut Floor, &mut SimAnim, Option<&PathFollow>, &crate::sim::Sim, Option<&crate::simbody::Wearing>)>,
+    mut townies: Query<(Entity, &mut Townie, &mut Transform, &mut Visibility, &mut Floor, &mut SimAnim, Option<&PathFollow>, &crate::sim::Sim, Option<&crate::simbody::Wearing>), Without<crate::city_mobility::CoarseActor>>,
     weather: Res<crate::weather::Weather>,
 ) {
     let Some(walk) = sidewalk else { return };

@@ -130,7 +130,7 @@ pub struct LotGuest {
 }
 
 /// How many townies are out on a community lot at once, and when.
-const GUESTS: usize = 4;
+pub(crate) const GUESTS: usize = 4;
 const GUEST_HOURS: std::ops::Range<f32> = 8.0..22.0;
 
 /// Furniture of the community lot being visited.
@@ -353,8 +353,10 @@ fn guests(
     world: Res<CurrentWorld>,
     building: Option<Res<ActiveBuilding>>,
     mut visited: ResMut<OpenLots>,
-    mut townies: Query<(Entity, &mut Transform, &mut Floor, &crate::town::Townie), (Without<LotGuest>, Without<crate::interact::Invited>, Without<crate::interact::Visitor>, Without<crate::sim::HouseholdMember>)>,
+    story: Res<crate::story::TownStory>,
+    mut townies: Query<(Entity, &mut Transform, &mut Floor, &crate::town::Townie, &Sim), (Without<LotGuest>, Without<crate::interact::Invited>, Without<crate::interact::Visitor>, Without<crate::sim::HouseholdMember>)>,
     out: Query<(Entity, &LotGuest, &OnLot), Without<crate::town::Townie>>,
+    incoming: Query<&Trip, Without<crate::sim::HouseholdMember>>,
 ) {
     let mut rng = rand::rng();
     // Time to go (or the lot closed): back to strolling.
@@ -367,6 +369,9 @@ fn guests(
         // Claims are released by the transition before the queue is dropped.
         crate::town::retire_to_background(&mut commands, e, clock.minutes + rng.random_range(30.0..120.0));
     }
+    // City visitors and explicit NPC trips have already reserved guest slots,
+    // even before arrivals installs LotGuest. The legacy picker shares the cap.
+    for trip in &incoming {*here.entry(trip.0).or_default()+=1;}
     let hour = clock.hour_f();
     let mut assigned = std::collections::HashSet::new();
     for v in visited.0.values_mut() {
@@ -374,13 +379,13 @@ fn guests(
         continue;
     }
     v.next_guest = clock.minutes + rng.random_range(10.0..45.0);
-    let free: Vec<Entity> = townies.iter().filter(|t| !t.3.walking && !assigned.contains(&t.0)).map(|t| t.0).collect();
+    let free: Vec<Entity> = townies.iter().filter(|t| !t.3.walking && !assigned.contains(&t.0) && !story.mobility.residents.contains_key(&t.4.id)).map(|t| t.0).collect();
     if free.is_empty() {
         continue;
     }
     let pick = free[rng.random_range(0..free.len())];
     assigned.insert(pick);
-    let Ok((e, mut tf, mut floor, _)) = townies.get_mut(pick) else { continue };
+    let Ok((e, mut tf, mut floor, _, _)) = townies.get_mut(pick) else { continue };
     let p = v.exit + Vec2::new(rng.random_range(-2.0..2.0), rng.random_range(-1.0..1.0));
     tf.translation = Vec3::new(p.x, crate::building::walk_height(&world.data, building.as_deref(), Vec3::new(p.x, 0.0, p.y)), p.y);
     floor.0 = 1;

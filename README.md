@@ -44,6 +44,9 @@ Remote contacts start without a 3D body. Idle off-lot bodies have a bounded cach
 and reload for visible activity or portraits. Logical entities and
 personal state remain alive while Entity-based gameplay is being migrated.
 Accepted outings retain the promised departure and meeting countdown across saves.
+City leisure visitors enter occupied community lots through the shared actor budget,
+retaining their planned arrival and departure times. Demand follows household occupancy;
+moving the camera does not change their ownership.
 Active dates and parties retain their participants, deadlines and accumulated results
 across saves.
 Cold residents have an initial coarse leisure itinerary between home and community lots.

@@ -13,6 +13,56 @@ impl Default for MobilityWorkload {
 /// Last actual lot is retained when old departure controllers clear OnLot.
 #[derive(Component)]
 pub(crate) struct OriginLot(pub u64);
+/// Requests follow simulation occupancy; camera movement never changes ownership.
+#[derive(Resource,Default)]
+pub(crate) struct PublicDemand {
+    wanted:HashSet<u64>,
+    scan:Option<(u64,Vec<usize>)>,
+    candidates:Vec<u64>,
+}
+/// Feed the shared actor factory, retaining its two-creations-per-frame budget.
+/// Only lots occupied by the played household invite detailed city simulation.
+/// Empty lingering lots cannot keep pulling the rest of the city into the scene.
+pub(crate) fn request_public(clock:Res<GameClock>,world:Res<crate::loading::CurrentWorld>,
+    lots:Res<crate::visit::OpenLots>,story:Res<TownStory>,
+    members:Query<&crate::visit::OnLot,With<crate::sim::HouseholdMember>>,
+    guests:Query<(Option<&crate::visit::OnLot>,Option<&crate::visit::Trip>,Has<crate::visit::LotGuest>),Without<crate::sim::HouseholdMember>>,
+    mut demand:ResMut<PublicDemand>,mut requests:ResMut<crate::residents::MaterializeRequests>) {
+    // Calls and other explicit requests retain priority. This batch fits wholly
+    // in the factory budget, so an old public request cannot open a closed lot.
+    demand.wanted.clear();if !requests.is_empty() {return;}
+    let now=s3sim::tick_at(clock.minutes);
+    let occupied:Vec<_>=lots.0.keys().copied().filter(|lot|members.iter().any(|on|on.0==*lot)).collect();
+    let key=(now/10,occupied);
+    if demand.scan.as_ref()!=Some(&key) {
+        let destinations:HashSet<_>=key.1.iter().filter_map(|lot|world.data.lots.get(*lot).map(|l|l.id)).collect();
+        demand.candidates=story.mobility.residents.iter().filter_map(|(&id,resident)|
+            public_destination(resident,now).filter(|lot|destinations.contains(lot)).map(|_|id)).collect();
+        demand.candidates.sort_by_key(|id|(story.mobility.residents[id].next,*id));
+        demand.scan=Some(key);
+    }
+    let mut slots=std::collections::HashMap::new();
+    for &lot in &demand.scan.as_ref().unwrap().1 {
+        let count=guests.iter().filter(|(on,trip,guest)|(*guest && on.is_some_and(|on|on.0==lot))||trip.is_some_and(|trip|trip.0==lot)).count();
+        if let Some(lot)=world.data.lots.get(lot) {slots.insert(lot.id,crate::visit::GUESTS.saturating_sub(count));}
+    }
+    let mut wanted=HashSet::new();
+    for id in &demand.candidates {
+        if wanted.len()==2 {break;}
+        let Some(resident)=story.mobility.residents.get(id) else {continue};
+        let Some(lot)=public_destination(resident,now) else {continue};
+        let Some(free)=slots.get_mut(&lot) else {continue};if *free==0 {continue;}
+        *free-=1;wanted.insert(*id);requests.request(*id);
+    }
+    demand.wanted=wanted;
+}
+fn public_destination(resident:&s3sim::mobility::Resident,now:s3sim::Tick)->Option<u64> {
+    // Never transfer a historical overdue transition or a rabbit-hole commitment.
+    if resident.activity.is_some() || resident.next<=now {return None;}
+    let lot=match resident.place {s3sim::mobility::Place::At{lot}=>lot,s3sim::mobility::Place::Travel{to,..}=>to};
+    (lot!=resident.plan.home).then_some(lot)
+}
+
 /// Reconcile once per game minute, rather than scanning the whole city per tick.
 /// A live detailed actor or dormant played household keeps its existing ownership.
 pub(crate) fn advance(clock:Res<GameClock>,delta:Res<crate::clock::SimDelta>,world:Res<crate::loading::CurrentWorld>,
@@ -88,16 +138,25 @@ pub(crate) fn reset_frame(mut workload:ResMut<MobilityWorkload>) {workload.proce
 /// Newly detailed actors receive the same trip deadline and destination. Existing
 /// detailed activity (including an explicit invitation) outranks coarse planning.
 pub(crate) fn handoff(mut commands:Commands,clock:Res<GameClock>,world:Res<crate::loading::CurrentWorld>,mut story:ResMut<TownStory>,
-    actors:Query<(Entity,&crate::sim::Sim,Has<crate::sim::HouseholdMember>,Has<crate::visit::OnLot>,Has<crate::visit::Trip>,Has<crate::interact::Invited>,Has<crate::interact::Visitor>,Has<crate::nav::PathFollow>,Has<CoarseActor>,&crate::interact::ActionQueue,Has<crate::meetups::Meeting>,Has<crate::careers::AtWork>,Has<crate::rabbitholes::AtRabbitHole>),With<crate::residents::PersonalStateReady>>) {
-    for (entity,sim,member,on,trip,invited,visitor,path,coarse,queue,meeting,work,rabbit) in &actors {
-        let busy=member || on || trip || invited || visitor || path || !queue.0.is_empty() || meeting || work || rabbit;
+    demand:Res<PublicDemand>,care:Res<crate::coarse_needs::CareLots>,
+    actors:Query<(Entity,&crate::sim::Sim,Has<crate::sim::HouseholdMember>,Has<crate::visit::OnLot>,Has<crate::visit::Trip>,Has<crate::interact::Invited>,Has<crate::interact::Visitor>,Has<crate::nav::PathFollow>,Has<CoarseActor>,&crate::interact::ActionQueue,Has<crate::meetups::Meeting>,Has<crate::careers::AtWork>,Has<crate::rabbitholes::AtRabbitHole>,Has<crate::sim::Selected>),With<crate::residents::PersonalStateReady>>) {
+    for (entity,sim,member,on,trip,invited,visitor,path,coarse,queue,meeting,work,rabbit,selected) in &actors {
+        let busy=member || selected || on || trip || invited || visitor || path || !queue.0.is_empty() || meeting || work || rabbit;
         let Some(pending)=story.mobility.residents.get(&sim.id) else {if busy && coarse {commands.entity(entity).remove::<CoarseActor>();}continue;};
         let at_home=matches!(pending.place,s3sim::mobility::Place::At{lot} if lot==pending.plan.home);
         // Rabbit-hole work/school and idle home records need logical identity,
         // not a public-lot visitor body. Preserve their original pending events.
-        if !busy && (coarse || at_home || pending.activity.is_some()) {commands.entity(entity).insert(CoarseActor);continue;}
+        if !busy && ((coarse && !demand.wanted.contains(&sim.id)) || at_home || pending.activity.is_some()) {commands.entity(entity).insert(CoarseActor);continue;}
         let resident=story.mobility.take(sim.id).unwrap();commands.entity(entity).remove::<CoarseActor>();
         if busy {continue;}
+        // Finish the partial minute before detailed decay takes ownership. The
+        // retained logical root may have been hydrated long before this arrival.
+        if let Some(state)=story.residents.records.get_mut(&sim.id).and_then(|r|r.state.as_mut()) {
+            let lot=match resident.place {s3sim::mobility::Place::At{lot}=>Some(lot),_=>None};
+            crate::coarse_needs::integrate(state,&resident,s3sim::tick_at(clock.minutes),lot.and_then(|l|care.0.get(&l).copied()).unwrap_or_default(),true);
+            commands.entity(entity).insert(crate::sim::Motives(state.motives));
+            if let Some(cursor)=state.coarse_needs {commands.entity(entity).insert(cursor);}
+        }
         use s3sim::mobility::Place;
         let (lot,arrive,leave)=match resident.place {
             Place::At{lot} if lot==resident.plan.home=>continue,
