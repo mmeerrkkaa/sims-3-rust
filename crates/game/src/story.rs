@@ -30,6 +30,8 @@ impl Plugin for StoryPlugin {
             .init_resource::<crate::city_mobility::MobilityWorkload>()
             .init_resource::<crate::city_mobility::PublicDemand>()
             .init_resource::<crate::coarse_needs::CareLots>()
+            .init_resource::<crate::coarse_needs::NeedWork>()
+            .add_systems(OnEnter(crate::AppState::Loading),|mut work:ResMut<crate::coarse_needs::NeedWork>|*work=default())
             .add_systems(Update,crate::coarse_needs::prepare.in_set(crate::clock::SimPhase::Prepare).run_if(in_state(PlayMode::Live)))
             .add_systems(OnEnter(crate::AppState::Loading),|mut work:ResMut<crate::city_mobility::MobilityWorkload>,mut demand:ResMut<crate::city_mobility::PublicDemand>|{*work=default();*demand=default();})
             .add_systems(Update,crate::city_mobility::reset_frame.in_set(crate::clock::SimPhase::Advance))
@@ -50,7 +52,9 @@ impl Plugin for StoryPlugin {
             .add_systems(crate::clock::SimTick, (merge_created, crate::residents::seed_residents, crate::life::capture_subscriber::<crate::life::LifeEvent, 6>, crate::residents::model_events, progress, crate::residents::reconcile_daily, read_the_news).chain().in_set(crate::aging::LifecyclePhase::Town))
             .add_systems(crate::clock::SimTick, (crate::life::capture_subscriber::<crate::life::LifeEvent, 6>, crate::residents::model_events).chain().in_set(crate::wishes::AspirationPhase::Initialize));
         #[cfg(local_validation)]
-        app.init_resource::<crate::npc_ownership_test::PublicProbe>()
+        app.init_resource::<crate::npc_ownership_test::CityBudgetProbe>()
+            .add_systems(Update,crate::npc_ownership_test::city_budget_frame.in_set(crate::clock::SimPhase::Gameplay).run_if(in_state(PlayMode::Live).and_then(||std::env::var_os("CITY_BUDGET_TEST").is_some() || std::env::var_os("CITY_BUDGET_RELOAD").is_some())))
+            .init_resource::<crate::npc_ownership_test::PublicProbe>()
             .add_systems(Update,crate::npc_ownership_test::public_frame.in_set(crate::clock::SimPhase::Gameplay).run_if(in_state(PlayMode::Live).and_then(||std::env::var_os("PUBLIC_CITY_TEST").is_some() || std::env::var_os("PUBLIC_CITY_RELOAD").is_some())))
             .init_resource::<crate::npc_ownership_test::CoarseNeedsProbe>()
             .add_systems(Update,crate::npc_ownership_test::coarse_needs_frame.in_set(crate::clock::SimPhase::Gameplay).run_if(in_state(PlayMode::Live).and_then(||std::env::var_os("COARSE_NEEDS_TEST").is_some() || std::env::var_os("COARSE_NEEDS_RELOAD").is_some())))

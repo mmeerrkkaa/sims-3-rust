@@ -111,13 +111,19 @@ impl City {
     /// Account for the old interval before changing place. Consumers keep their
     /// own durable cursor; overdue events therefore cannot rewrite past needs.
     pub fn advance_with(&mut self,now:Tick,budget:usize,mut interval:impl FnMut(ResidentId,&Resident,Tick,bool))->Work {
+        self.advance_when(now,budget,|id,resident,at|{interval(id,resident,at,true);true})
+    }
+    /// A consumer may retain the old interval while its bounded accounting is
+    /// incomplete. The original event stays due, including across saves.
+    pub fn advance_when(&mut self,now:Tick,budget:usize,mut ready:impl FnMut(ResidentId,&Resident,Tick)->bool)->Work {
         if self.budget_tick!=Some(now) {self.budget_tick=Some(now);self.spent=0;}
         let mut processed=0;
         while self.spent<budget {
             let Some(&(at,id))=self.due.first() else {break};if at>now {break;}
+            let Some(resident)=self.residents.get(&id) else {self.due.remove(&(at,id));continue};
+            if !ready(id,resident,at) {break;}
             self.due.remove(&(at,id));
-            let Some(resident)=self.residents.get_mut(&id) else {continue};
-            interval(id,resident,at,true);
+            let resident=self.residents.get_mut(&id).unwrap();
             let plan=resident.plan;
             match resident.place {
                 Place::At{lot}=> {
@@ -248,5 +254,23 @@ mod interval_tests {
         let mut spans=Vec::new();city.advance_with(200,8,|id,r,at,_|spans.push((id,r.place,at)));
         assert_eq!(spans,vec![(1,Place::At{lot:1},100),(1,Place::Travel{from:1,to:2,depart:100,arrive:120},120),(1,Place::At{lot:2},150),(1,Place::Travel{from:2,to:1,depart:150,arrive:170},170)]);
         assert_eq!(city.advance_with(200,8,|_,_,_,_|panic!("no replay")).processed,0);
+    }
+}
+
+#[cfg(test)]
+mod gated_tests {
+    use super::*;
+    #[test]
+    fn unfinished_accounting_retains_original_event_through_save_and_event_budget() {
+        let plan=Plan{home:1,destination:2,departure:100,travel:20,stay:30,work:None,school:None};
+        let mut city=City::default();city.seed(7,plan,0);
+        let result=city.advance_when(200,8,|_,r,until|{assert_eq!(r.place,Place::At{lot:1});assert_eq!(until,100);false});
+        assert_eq!(result,Work{processed:0,overdue:1,oldest_delay:100});assert_eq!(city.residents[&7].transitions,0);
+        let mut city:City=serde_json::from_str(&serde_json::to_string(&city).unwrap()).unwrap();
+        assert_eq!(city.advance_when(200,1,|_,_,_|false),result);
+        let mut dates=Vec::new();assert_eq!(city.advance_when(200,1,|_,_,at|{dates.push(at);true}).processed,1);
+        assert_eq!(city.advance_when(200,1,|_,_,_|panic!("event budget retained")).processed,0);
+        city.advance_when(201,8,|_,_,at|{dates.push(at);true});assert_eq!(dates,vec![100,120,150,170]);
+        assert_eq!(city.residents[&7].place,Place::At{lot:1});assert_eq!(city.residents[&7].transitions,4);
     }
 }

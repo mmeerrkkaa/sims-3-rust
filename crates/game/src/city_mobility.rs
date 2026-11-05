@@ -66,7 +66,7 @@ fn public_destination(resident:&s3sim::mobility::Resident,now:s3sim::Tick)->Opti
 /// Reconcile once per game minute, rather than scanning the whole city per tick.
 /// A live detailed actor or dormant played household keeps its existing ownership.
 pub(crate) fn advance(clock:Res<GameClock>,delta:Res<crate::clock::SimDelta>,world:Res<crate::loading::CurrentWorld>,
-    care:Res<crate::coarse_needs::CareLots>,actors:Query<(&crate::sim::Sim,Has<CoarseActor>)>,weather:Res<crate::weather::Weather>,dormant:Res<crate::household::Dormant>,mut story:ResMut<TownStory>,mut workload:ResMut<MobilityWorkload>) {
+    care:Res<crate::coarse_needs::CareLots>,mut needs:ResMut<crate::coarse_needs::NeedWork>,actors:Query<(&crate::sim::Sim,Has<CoarseActor>)>,weather:Res<crate::weather::Weather>,dormant:Res<crate::household::Dormant>,mut story:ResMut<TownStory>,mut workload:ResMut<MobilityWorkload>) {
     if delta.0<=0.0 {return;}
     let now=s3sim::tick_at(clock.minutes);
     let periodic=workload.last_reconcile.is_none_or(|previous|now<previous || now/10!=previous/10);
@@ -122,23 +122,22 @@ pub(crate) fn advance(clock:Res<GameClock>,delta:Res<crate::clock::SimDelta>,wor
         }
     }
     let TownStory{mobility,residents,..}=&mut *story;
-    let mut account=|id:u64,resident:&s3sim::mobility::Resident,until,exact| {
+    let work=mobility.advance_when(now,64,|id,resident,until| {
         if let Some(saved)=residents.records.get_mut(&id).and_then(|r|r.state.as_mut()) {
             let lot=match resident.place {s3sim::mobility::Place::At{lot}=>Some(lot),_=>None};
-            crate::coarse_needs::integrate(saved,resident,until,lot.and_then(|l|care.0.get(&l).copied()).unwrap_or_default(),exact);
-        }
-    };
-    let work=mobility.advance_with(now,64,&mut account);
-    // Do not cross an unprocessed historical transition when a budget is exhausted.
-    if periodic {for (&id,resident) in &mobility.residents {account(id,resident,now.min(resident.next),false);}}
+            needs.account(now,saved,resident,until,lot.and_then(|l|care.0.get(&l).copied()).unwrap_or_default(),true)
+        } else {true}
+    });
+    // This round can span ticks; a large city is never scanned in full per tick.
+    needs.periodic(now,mobility,residents,&care);
     workload.processed+=work.processed;workload.overdue=work.overdue;workload.oldest_delay=work.oldest_delay;
 }
-pub(crate) fn reset_frame(mut workload:ResMut<MobilityWorkload>) {workload.processed=0;}
+pub(crate) fn reset_frame(mut workload:ResMut<MobilityWorkload>,mut needs:ResMut<crate::coarse_needs::NeedWork>) {workload.processed=0;needs.frame_steps=0;needs.frame_visits=0;}
 
 /// Newly detailed actors receive the same trip deadline and destination. Existing
 /// detailed activity (including an explicit invitation) outranks coarse planning.
 pub(crate) fn handoff(mut commands:Commands,clock:Res<GameClock>,world:Res<crate::loading::CurrentWorld>,mut story:ResMut<TownStory>,
-    demand:Res<PublicDemand>,care:Res<crate::coarse_needs::CareLots>,
+    demand:Res<PublicDemand>,care:Res<crate::coarse_needs::CareLots>,mut needs:ResMut<crate::coarse_needs::NeedWork>,
     actors:Query<(Entity,&crate::sim::Sim,Has<crate::sim::HouseholdMember>,Has<crate::visit::OnLot>,Has<crate::visit::Trip>,Has<crate::interact::Invited>,Has<crate::interact::Visitor>,Has<crate::nav::PathFollow>,Has<CoarseActor>,&crate::interact::ActionQueue,Has<crate::meetups::Meeting>,Has<crate::careers::AtWork>,Has<crate::rabbitholes::AtRabbitHole>,Has<crate::sim::Selected>),With<crate::residents::PersonalStateReady>>) {
     for (entity,sim,member,on,trip,invited,visitor,path,coarse,queue,meeting,work,rabbit,selected) in &actors {
         let busy=member || selected || on || trip || invited || visitor || path || !queue.0.is_empty() || meeting || work || rabbit;
@@ -147,16 +146,19 @@ pub(crate) fn handoff(mut commands:Commands,clock:Res<GameClock>,world:Res<crate
         // Rabbit-hole work/school and idle home records need logical identity,
         // not a public-lot visitor body. Preserve their original pending events.
         if !busy && ((coarse && !demand.wanted.contains(&sim.id)) || at_home || pending.activity.is_some()) {commands.entity(entity).insert(CoarseActor);continue;}
-        let resident=story.mobility.take(sim.id).unwrap();commands.entity(entity).remove::<CoarseActor>();
-        if busy {continue;}
+        if !busy && pending.next<=s3sim::tick_at(clock.minutes) {commands.entity(entity).insert(CoarseActor);continue;}
+        let resident=pending.clone();
+        if busy {story.mobility.take(sim.id);commands.entity(entity).remove::<CoarseActor>();continue;}
         // Finish the partial minute before detailed decay takes ownership. The
         // retained logical root may have been hydrated long before this arrival.
         if let Some(state)=story.residents.records.get_mut(&sim.id).and_then(|r|r.state.as_mut()) {
             let lot=match resident.place {s3sim::mobility::Place::At{lot}=>Some(lot),_=>None};
-            crate::coarse_needs::integrate(state,&resident,s3sim::tick_at(clock.minutes),lot.and_then(|l|care.0.get(&l).copied()).unwrap_or_default(),true);
+            let now=s3sim::tick_at(clock.minutes);
+            if !needs.account(now,state,&resident,now,lot.and_then(|l|care.0.get(&l).copied()).unwrap_or_default(),true) {commands.entity(entity).insert(CoarseActor);continue;}
             commands.entity(entity).insert(crate::sim::Motives(state.motives));
             if let Some(cursor)=state.coarse_needs {commands.entity(entity).insert(cursor);}
         }
+        story.mobility.take(sim.id);commands.entity(entity).remove::<CoarseActor>();
         use s3sim::mobility::Place;
         let (lot,arrive,leave)=match resident.place {
             Place::At{lot} if lot==resident.plan.home=>continue,

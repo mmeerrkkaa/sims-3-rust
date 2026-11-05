@@ -50,6 +50,8 @@ moving the camera does not change their ownership.
 Active dates and parties retain their participants, deadlines and accumulated results
 across saves.
 Cold residents have an initial coarse leisure itinerary between home and community lots.
+Needs catch-up uses a shared bounded quota; unfinished intervals retain their original
+place and event deadline through saves. Periodic city care is spread across ticks.
 Departures, travel deadlines and returns are persistent and processed with a tick budget;
 detailed activation takes over the existing journey. Work and school calendars use
 the actual career locations and hours; idle detailed NPCs can rejoin a saved journey
